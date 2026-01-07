@@ -1,0 +1,64 @@
+# === Python bytecode / caches ===
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# === Virtual environments ===
+.venv/
+venv/
+ENV/
+env/
+.env/
+
+# Keep the template env file in git
+!.env_example
+!.env_example.md
+
+# === Packaging / build artifacts ===
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# === Coverage / test reports ===
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+cov.xml
+
+# === Logs / local run artifacts ===
+*.log
+
+# Output runs (JSONL/CSV produced by scripts)
+outputs/
+
+# === Jupyter / notebooks (optional) ===
+.ipynb_checkpoints/
+
+# === OS / editor noise ===
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+
+# VS Code / Cursor / IDEs
+.vscode/
+.idea/
+*.iml
+
+# === Git tooling ===
+*.orig
+
+
