@@ -21,7 +21,7 @@ def test_system_prompt_mentions_search_and_budget_guidance(monkeypatch: Any) -> 
             # Minimal valid JSON for schema.
             class _R:
                 output_text = (
-                    '{"input_url":"https://example.com","final_platform":"unknown","confidence":"low","evidence_tier":"C","signals":[],"reasoning":"r"}'
+                    '{"input_url":"https://example.com","shop_presence":"unclear","final_platform":"unknown","other_platform_label":"","confidence":"low","evidence_tier":"C","signals":[],"reasoning":"r"}'
                 )
                 usage = type(
                     "U",

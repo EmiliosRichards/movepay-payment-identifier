@@ -36,7 +36,9 @@ def test_evaluate_list_debug_web_search_counts_query_vs_open(tmp_path: Path, mon
         return (
             {
                 "input_url": "https://a.com",
+                "shop_presence": "unclear",
                 "final_platform": "unknown",
+                "other_platform_label": "",
                 "confidence": "low",
                 "evidence_tier": "C",
                 "signals": [],

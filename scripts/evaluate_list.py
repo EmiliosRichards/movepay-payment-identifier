@@ -418,7 +418,9 @@ def main() -> int:
         "run_id",
         "name",
         "website",
+        "shop_presence",
         "final_platform",
+        "other_platform_label",
         "confidence",
         "evidence_tier",
         "signals_json",
@@ -709,7 +711,9 @@ def main() -> int:
                 error = f"{type(e).__name__}: {e}"
                 model_result = {
                     "input_url": website if website.startswith("http") else f"https://{website}",
+                    "shop_presence": "unclear",
                     "final_platform": "unknown",
+                    "other_platform_label": "",
                     "confidence": "low",
                     "evidence_tier": "C",
                     "signals": [],
@@ -736,7 +740,9 @@ def main() -> int:
 
             duration_seconds = time.monotonic() - t0
 
+            shop_presence = str(model_result.get("shop_presence") or "")
             final_platform = str(model_result.get("final_platform") or "")
+            other_platform_label = str(model_result.get("other_platform_label") or "")
             confidence = model_result.get("confidence")
             evidence_tier = model_result.get("evidence_tier")
             signals = model_result.get("signals") or []
@@ -746,7 +752,9 @@ def main() -> int:
             record = {
                 "name": name,
                 "website": website,
+                "shop_presence": shop_presence,
                 "final_platform": final_platform,
+                "other_platform_label": other_platform_label,
                 "confidence": confidence,
                 "evidence_tier": evidence_tier,
                 "signals": signals,
@@ -810,7 +818,9 @@ def main() -> int:
                 "run_id": stem,
                 "name": record["name"],
                 "website": record["website"],
+                "shop_presence": shop_presence,
                 "final_platform": final_platform,
+                "other_platform_label": other_platform_label,
                 "input_url": model_result.get("input_url"),
                 "confidence": confidence,
                 "evidence_tier": evidence_tier,

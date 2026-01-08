@@ -76,7 +76,9 @@ def test_evaluate_company_builds_prompt_and_normalizes_url(monkeypatch: Any) -> 
 
     payload = {
         "input_url": "https://example.com",
+        "shop_presence": "unclear",
         "final_platform": "unknown",
+        "other_platform_label": "",
         "confidence": "low",
         "evidence_tier": "C",
         "signals": [],

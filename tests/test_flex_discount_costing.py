@@ -37,7 +37,9 @@ def test_evaluate_list_applies_flex_discount_to_token_cost_only(tmp_path: Path, 
         return (
             {
                 "input_url": "https://a.com",
+                "shop_presence": "unclear",
                 "final_platform": "unknown",
+                "other_platform_label": "",
                 "confidence": "low",
                 "evidence_tier": "C",
                 "signals": [],
@@ -96,7 +98,9 @@ def test_evaluate_single_applies_flex_discount_to_token_cost_only(monkeypatch, c
         return (
             {
                 "input_url": "https://a.com",
+                "shop_presence": "unclear",
                 "final_platform": "unknown",
+                "other_platform_label": "",
                 "confidence": "low",
                 "evidence_tier": "C",
                 "signals": [],

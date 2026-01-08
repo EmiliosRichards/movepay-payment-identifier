@@ -47,7 +47,9 @@ def test_retry_disambiguation_on_low_confidence_aggregates_cost_and_calls(tmp_pa
             return (
                 {
                     "input_url": "https://a.com",
+                    "shop_presence": "unclear",
                     "final_platform": "unknown",
+                    "other_platform_label": "",
                     "confidence": "low",
                     "evidence_tier": "C",
                     "signals": [],
@@ -59,7 +61,9 @@ def test_retry_disambiguation_on_low_confidence_aggregates_cost_and_calls(tmp_pa
         return (
             {
                 "input_url": "https://a.com",
+                "shop_presence": "shop",
                 "final_platform": "magento",
+                "other_platform_label": "",
                 "confidence": "high",
                 "evidence_tier": "A",
                 "signals": ["mage/"],

@@ -38,7 +38,9 @@ def test_random_sample_is_deterministic_and_unique(tmp_path: Path, monkeypatch) 
         return (
             {
                 "input_url": "https://x",
+                "shop_presence": "unclear",
                 "final_platform": "unknown",
+                "other_platform_label": "",
                 "confidence": "low",
                 "evidence_tier": "C",
                 "signals": [],
@@ -183,7 +185,9 @@ def test_resume_skips_already_processed_websites(tmp_path: Path, monkeypatch) ->
         return (
             {
                 "input_url": f"https://{url}",
+                "shop_presence": "unclear",
                 "final_platform": "unknown",
+                "other_platform_label": "",
                 "confidence": "low",
                 "evidence_tier": "C",
                 "signals": [],

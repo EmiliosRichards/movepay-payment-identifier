@@ -8,10 +8,15 @@ OUTPUT_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "input_url": {"type": "string"},
+        # Whether the domain appears to be an ecommerce shop site or not.
+        "shop_presence": {"type": "string", "enum": ["shop", "not_shop", "unclear"]},
         "final_platform": {
             "type": "string",
             "enum": ["magento", "shopware", "woocommerce", "shopify", "other", "unknown"],
         },
+        # For final_platform=other, capture a short known label when identifiable (else empty).
+        # Examples: "wordpress", "weblication", "aem", "wix", "squarespace", "bigcommerce", "prestashop", "custom/laravel".
+        "other_platform_label": {"type": "string", "maxLength": 80},
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         "evidence_tier": {"type": "string", "enum": ["A", "B", "C"]},
         # Short list of key signals used for the decision (OK to be empty).
@@ -25,7 +30,9 @@ OUTPUT_SCHEMA: Dict[str, Any] = {
     },
     "required": [
         "input_url",
+        "shop_presence",
         "final_platform",
+        "other_platform_label",
         "confidence",
         "evidence_tier",
         "signals",

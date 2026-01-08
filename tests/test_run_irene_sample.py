@@ -51,7 +51,9 @@ def test_run_irene_sample_main_writes_jsonl(tmp_path: Path, monkeypatch) -> None
         return (
             {
                 "input_url": url if url.startswith("http") else f"https://{url}",
+                "shop_presence": "shop" if plat != "unknown" else "unclear",
                 "final_platform": plat,
+                "other_platform_label": "",
                 "confidence": "low" if plat == "unknown" else "high",
                 "evidence_tier": "C" if plat == "unknown" else "A",
                 "signals": [] if plat == "unknown" else ["cdn.shopify.com"],
@@ -89,7 +91,9 @@ def test_run_irene_sample_main_writes_jsonl(tmp_path: Path, monkeypatch) -> None
         return (
             {
                 "input_url": url if url.startswith("http") else f"https://{url}",
+                "shop_presence": "shop" if plat != "unknown" else "unclear",
                 "final_platform": plat,
+                "other_platform_label": "",
                 "confidence": "low" if plat == "unknown" else "high",
                 "evidence_tier": "C" if plat == "unknown" else "A",
                 "signals": [] if plat == "unknown" else ["cdn.shopify.com"],

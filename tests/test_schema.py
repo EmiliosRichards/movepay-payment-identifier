@@ -9,7 +9,9 @@ def test_schema_has_expected_keys_only() -> None:
 
     expected = {
         "input_url",
+        "shop_presence",
         "final_platform",
+        "other_platform_label",
         "confidence",
         "evidence_tier",
         "signals",

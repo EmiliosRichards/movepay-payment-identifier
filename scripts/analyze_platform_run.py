@@ -56,14 +56,24 @@ def main() -> int:
     final_platform = col("final_platform")
     confidence = col("confidence")
     evidence_tier = col("evidence_tier")
+    shop_presence = col("shop_presence")
+    other_platform_label = col("other_platform_label")
 
     print(f"rows: {n}")
 
     # Distributions
     print("\nDistributions:")
     print(f"- final_platform: {dict(sorted(Counter(final_platform).items()))}")
+    if any(x.strip() for x in shop_presence):
+        print(f"- shop_presence:  {dict(sorted(Counter(shop_presence).items()))}")
     print(f"- confidence:     {dict(sorted(Counter(confidence).items()))}")
     print(f"- evidence_tier:  {dict(sorted(Counter(evidence_tier).items()))}")
+    if any(x.strip() for x in other_platform_label):
+        # show top labels (excluding empty)
+        lbls = [x.strip() for x in other_platform_label if (x or "").strip()]
+        if lbls:
+            c = Counter(lbls)
+            print(f"- other_platform_label (top): {dict(c.most_common(12))}")
 
     # Crosstabs
     def _crosstab(a: Iterable[str], b: Iterable[str]) -> Dict[Tuple[str, str], int]:

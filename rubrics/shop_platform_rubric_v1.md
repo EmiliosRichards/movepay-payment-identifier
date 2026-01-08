@@ -11,9 +11,11 @@ Your output must choose exactly one:
 - **unknown**
 
 You must also output:
+- `shop_presence`: shop|not_shop|unclear
 - `confidence`: low|medium|high
 - `evidence_tier`: A|B|C
 - `signals`: short bullet-like strings (max 8) describing the strongest platform indicators found
+- `other_platform_label`: short known label when `final_platform=other` (else empty string)
 - `reasoning`: 2–4 sentences, ≤600 characters, **no raw URLs**
 
 ---
@@ -44,6 +46,8 @@ Indirect hints only (single low-quality directory listing, vague blog mention, a
 
 ## Decision rules (avoid common failure modes)
 
+- **Not a shop**: if the domain does not appear to run a transactional shop (no product catalog/cart/checkout; purely informational/lead-gen),
+  set `shop_presence=not_shop` and set `final_platform=other` (unless you can confirm it is one of the listed platforms, which would imply a shop).
 - **Target-domain specificity**: evidence must be about the provided domain, not an agency’s other clients.
 - **Conflicts**: if signals disagree and you can’t resolve, output `unknown` with low confidence.
 - **Dead/blocked/parked/ambiguous**: output `unknown` with low confidence.

@@ -37,7 +37,9 @@ def test_semicolon_csv_with_bom_and_commas_in_fields_parses_correctly(tmp_path: 
         return (
             {
                 "input_url": "https://acme.example",
+                "shop_presence": "unclear",
                 "final_platform": "unknown",
+                "other_platform_label": "",
                 "confidence": "low",
                 "evidence_tier": "C",
                 "signals": [],

@@ -492,7 +492,14 @@ Instructions:
 {tool_budget_line}- Be conservative when evidence is missing.
 {extra_instruction_block}- In the JSON output:
   - set input_url exactly to the Shop website URL below
+  - set shop_presence:
+    - shop: clear product catalog + cart/checkout (transactional ecommerce)
+    - not_shop: informational/lead-gen site with no transactional shop
+    - unclear: you cannot determine from available evidence
   - choose exactly one final_platform: magento|shopware|woocommerce|shopify|other|unknown
+  - set other_platform_label:
+    - if final_platform=other and you can identify a known system, use a short label (e.g. wordpress, weblication, aem, wix, squarespace, bigcommerce, prestashop, custom/laravel)
+    - otherwise use "" (empty string)
   - keep reasoning SHORT (2-4 sentences, <=600 chars). State the strongest evidence tier/signals and any key uncertainty.
   - if the site is unreachable/blocked/ambiguous or evidence conflicts, set final_platform=unknown and confidence=low
 {sources_instruction}  - do NOT include URLs in `reasoning`.
