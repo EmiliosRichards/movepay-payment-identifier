@@ -489,12 +489,18 @@ Instructions:
 - Use the web search tool to research:
   - the target domain itself for direct platform markers (Tier A)
   - and the broader web for reputable technology-profiler evidence (Tier B), if needed.
+- IMPORTANT: If tool calls permit, you MUST open at least one result from the target domain (homepage or a shop/product page)
+  to inspect direct HTML/asset markers (e.g., cdn.shopify.com, myshopify.com, wp-content/plugins/woocommerce, /wp-json/wc/,
+  /bundles/storefront/, Magento_ modules, form_key).
+- Also check for common shop routing patterns:
+  - follow obvious “Shop / Store / Warenkorb / Checkout” links on the site
+  - if the site is a brochure/brand page, check whether a clearly-linked shop lives on a subdomain like shop.<root-domain>
 {tool_budget_line}- Be conservative when evidence is missing.
 {extra_instruction_block}- In the JSON output:
   - set input_url exactly to the Shop website URL below
   - set shop_presence:
-    - shop: clear product catalog + cart/checkout (transactional ecommerce)
-    - not_shop: informational/lead-gen site with no transactional shop
+    - shop: ecommerce platform present on the target domain or a clearly-linked shop subdomain under the same root (even if limited/coming-soon)
+    - not_shop: informational/lead-gen site with no ecommerce platform present (ignore third-party-only donation/event checkout widgets)
     - unclear: you cannot determine from available evidence
   - choose exactly one final_platform: magento|shopware|woocommerce|shopify|other|unknown
   - set other_platform_label:

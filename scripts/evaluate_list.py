@@ -15,6 +15,7 @@ from shoptech_eval import (
     evaluate_company_with_usage_and_web_search_artifacts,
     evaluate_company_with_usage_and_web_search_debug,
 )
+from shoptech_eval.local_detector import detect_platform_local
 from shoptech_eval.costing import (
     compute_cost_usd,
     compute_web_search_tool_cost_usd,
@@ -75,7 +76,12 @@ def _load_url_list(path: Path) -> List[Dict[str, str]]:
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
-            rows.append({"Website": s})
+            # Support "url<TAB>name" lines (our sampled URL list format).
+            if "\t" in s:
+                url, name = s.split("\t", 1)
+                rows.append({"Website": url.strip(), "Name": name.strip()})
+            else:
+                rows.append({"Website": s})
     return rows
 
 
@@ -366,6 +372,21 @@ def main() -> int:
         help="Continue the run if an evaluation errors; write an error record instead of aborting. Env: SHOPTECH_CONTINUE_ON_ERROR=1",
     )
     parser.add_argument(
+        "--local-first",
+        action="store_true",
+        default=(os.environ.get("SHOPTECH_LOCAL_FIRST", "").strip() in ("1", "true", "TRUE", "yes", "YES")),
+        help=(
+            "Try API-free local detection first (HTML fingerprinting + shop-link discovery + DNS Shopify hint). "
+            "If confident, skip the OpenAI call. Env: SHOPTECH_LOCAL_FIRST=1"
+        ),
+    )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        default=(os.environ.get("SHOPTECH_LOCAL_ONLY", "").strip() in ("1", "true", "TRUE", "yes", "YES")),
+        help="API-free mode: only run local detection, never call OpenAI (no OPENAI_API_KEY required). Env: SHOPTECH_LOCAL_ONLY=1",
+    )
+    parser.add_argument(
         "--progress-every",
         type=int,
         default=int(os.environ.get("SHOPTECH_PROGRESS_EVERY", "25")),
@@ -373,8 +394,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("Missing OPENAI_API_KEY env var.")
+    if not os.environ.get("OPENAI_API_KEY") and not bool(args.local_only):
+        raise SystemExit("Missing OPENAI_API_KEY env var (or set --local-only).")
 
     # Flex can be slower; default to a larger timeout if not set explicitly.
     timeout_seconds = args.timeout_seconds
@@ -454,6 +475,9 @@ def main() -> int:
         "flex_fallback_used",
         "retry_used",
         "retry_selected",
+        "detector",
+        "local_is_sticky",
+        "local_sticky_reasons_json",
         "error",
     ]
     if include_bucket:
@@ -572,15 +596,137 @@ def main() -> int:
             flex_fallback_used = False
 
             try:
-                def _do_eval_once(
-                    *,
-                    max_tool_calls: int | None,
-                    extra_user_instructions: str | None,
-                    second_query_on_uncertainty: bool,
-                ) -> Dict[str, Any]:
-                    use_debug = bool(args.debug_web_search) or bool(extra_user_instructions and extra_user_instructions.strip())
-                    if use_debug:
-                        res, use, ws = evaluate_company_with_usage_and_web_search_debug(
+                # Optional API-free shortcut
+                local_used = False
+                local_debug = None
+                local_sticky = False
+                local_sticky_reasons: list[str] = []
+                if args.local_first or args.local_only:
+                    ld = detect_platform_local(website)
+                    local_result = ld.model_result
+                    local_debug = ld.debug
+                    sticky = (local_debug or {}).get("sticky") if isinstance(local_debug, dict) else {}
+                    if isinstance(sticky, dict):
+                        local_sticky = bool(sticky.get("is_sticky", False))
+                        local_sticky_reasons = list(sticky.get("reasons") or [])
+                    # Treat high-confidence non-unknown detections as "good enough" to skip OpenAI
+                    local_conf = str(local_result.get("confidence") or "").strip().lower()
+                    local_plat = str(local_result.get("final_platform") or "").strip().lower()
+                    if args.local_only or (
+                        (local_conf in ("high", "medium"))
+                        and local_plat != "unknown"
+                        and (not local_sticky)
+                    ):
+                        local_used = True
+                        model_result = local_result
+                        usage = type(
+                            "_Usage",
+                            (),
+                            {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0,
+                                "input_tokens_details": type("X", (), {"cached_tokens": 0})(),
+                                "output_tokens_details": type("Y", (), {"reasoning_tokens": 0})(),
+                            },
+                        )()
+                        web_search_calls = 0
+                        url_citations = []
+                        ws_debug = None
+                        web_search_calls_query = 0
+                        web_search_calls_open = 0
+                        web_search_calls_unknown = 0
+                        web_search_tool_calls_total = 0
+                        retry_used = False
+                        retry_selected = "first"
+                        # Ensure token usage vars remain zero
+                        usage_input_tokens = 0
+                        usage_output_tokens = 0
+                        usage_total_tokens = 0
+                        cached_tokens = 0
+                        reasoning_tokens = 0
+                        token_cost_usd_raw = 0.0
+                        token_cost_usd = 0.0
+                        flex_attempts = 0
+                        flex_retries = 0
+                        flex_sleep = 0.0
+                        flex_fallback_used = False
+
+                if not local_used and args.local_only:
+                    # Should never happen (local_only always sets local_used), but keep safe.
+                    raise RuntimeError("local_only set but local detection did not run")
+
+                if local_used:
+                    error = ""
+                else:
+                    # If we ran local-first and it didn't conclusively identify the platform, guide the model with hints.
+                    local_hint = None
+                    if args.local_first and local_debug and isinstance(local_debug, dict):
+                        attempts = local_debug.get("attempts") or []
+                        cand_urls: list[str] = []
+                        if isinstance(attempts, list):
+                            for a in attempts[:6]:
+                                if isinstance(a, dict) and a.get("url"):
+                                    cand_urls.append(str(a["url"]))
+                        sticky = local_debug.get("sticky") or {}
+                        reasons = []
+                        if isinstance(sticky, dict):
+                            reasons = list(sticky.get("reasons") or [])
+                        local_hint = (
+                            "Local precheck could not confidently identify the platform.\n"
+                            + (f"Sticky signals: {', '.join(reasons)}\n" if reasons else "")
+                            + (f"Candidate URLs to open first: {', '.join(cand_urls)}\n" if cand_urls else "")
+                            + "Please open the target domain (and any candidate shop URLs) and look for direct HTML/asset markers and cart/checkout presence.\n"
+                            + "If direct HTML markers are missing due to JS/bot protection, run a technology-profiler query (e.g. 'builtwith <domain>' or 'wappalyzer <domain>') and use that as Tier B evidence.\n"
+                        )
+                    def _do_eval_once(
+                        *,
+                        max_tool_calls: int | None,
+                        extra_user_instructions: str | None,
+                        second_query_on_uncertainty: bool,
+                    ) -> Dict[str, Any]:
+                        use_debug = bool(args.debug_web_search) or bool(
+                            extra_user_instructions and extra_user_instructions.strip()
+                        )
+                        if use_debug:
+                            res, use, ws = evaluate_company_with_usage_and_web_search_debug(
+                                website,
+                                args.model,
+                                rubric_file=args.rubric_file,
+                                max_tool_calls=max_tool_calls,
+                                reasoning_effort=args.reasoning_effort,
+                                prompt_cache=args.prompt_cache,
+                                prompt_cache_retention=args.prompt_cache_retention,
+                                service_tier=args.service_tier,
+                                timeout_seconds=timeout_seconds,
+                                flex_max_retries=args.flex_max_retries,
+                                flex_fallback_to_auto=args.flex_fallback_to_auto,
+                                include_sources=False,
+                                extra_user_instructions=extra_user_instructions,
+                                second_query_on_uncertainty=second_query_on_uncertainty,
+                            )
+                            citations = (ws or {}).get("url_citations") or []
+                            by_kind_completed = (ws or {}).get("by_kind_completed") or {}
+                            q = int(by_kind_completed.get("query", 0) or 0)
+                            o = int(by_kind_completed.get("open", 0) or 0)
+                            u = int(by_kind_completed.get("unknown", 0) or 0)
+                            billed_q = int(q)
+                            tool_total = int((ws or {}).get("completed", 0) or 0)
+                            flex_meta_local = (ws or {}).get("flex") if isinstance(ws, dict) else {}
+                            return {
+                                "model_result": res,
+                                "usage": use,
+                                "ws_debug": ws,
+                                "url_citations": citations,
+                                "web_search_calls": billed_q,
+                                "web_search_calls_query": q,
+                                "web_search_calls_open": o,
+                                "web_search_calls_unknown": u,
+                                "web_search_tool_calls_total": tool_total,
+                                "flex_meta": flex_meta_local or {},
+                            }
+
+                        res, use, billed_q, citations = evaluate_company_with_usage_and_web_search_artifacts(
                             website,
                             args.model,
                             rubric_file=args.rubric_file,
@@ -592,119 +738,86 @@ def main() -> int:
                             timeout_seconds=timeout_seconds,
                             flex_max_retries=args.flex_max_retries,
                             flex_fallback_to_auto=args.flex_fallback_to_auto,
-                            include_sources=False,
-                            extra_user_instructions=extra_user_instructions,
                             second_query_on_uncertainty=second_query_on_uncertainty,
                         )
-                        citations = (ws or {}).get("url_citations") or []
-                        by_kind_completed = (ws or {}).get("by_kind_completed") or {}
-                        q = int(by_kind_completed.get("query", 0) or 0)
-                        o = int(by_kind_completed.get("open", 0) or 0)
-                        u = int(by_kind_completed.get("unknown", 0) or 0)
-                        billed_q = int(q)
-                        tool_total = int((ws or {}).get("completed", 0) or 0)
-                        flex_meta_local = (ws or {}).get("flex") if isinstance(ws, dict) else {}
                         return {
                             "model_result": res,
                             "usage": use,
-                            "ws_debug": ws,
+                            "ws_debug": None,
                             "url_citations": citations,
-                            "web_search_calls": billed_q,
-                            "web_search_calls_query": q,
-                            "web_search_calls_open": o,
-                            "web_search_calls_unknown": u,
-                            "web_search_tool_calls_total": tool_total,
-                            "flex_meta": flex_meta_local or {},
+                            "web_search_calls": int(billed_q),
+                            "web_search_calls_query": 0,
+                            "web_search_calls_open": 0,
+                            "web_search_calls_unknown": 0,
+                            "web_search_tool_calls_total": int(billed_q),
+                            "flex_meta": {},
                         }
 
-                    res, use, billed_q, citations = evaluate_company_with_usage_and_web_search_artifacts(
-                        website,
-                        args.model,
-                        rubric_file=args.rubric_file,
-                        max_tool_calls=max_tool_calls,
-                        reasoning_effort=args.reasoning_effort,
-                        prompt_cache=args.prompt_cache,
-                        prompt_cache_retention=args.prompt_cache_retention,
-                        service_tier=args.service_tier,
-                        timeout_seconds=timeout_seconds,
-                        flex_max_retries=args.flex_max_retries,
-                        flex_fallback_to_auto=args.flex_fallback_to_auto,
-                        second_query_on_uncertainty=second_query_on_uncertainty,
+                    a1 = _do_eval_once(
+                        max_tool_calls=args.max_tool_calls,
+                        extra_user_instructions=local_hint,
+                        second_query_on_uncertainty=bool(args.second_query_on_uncertainty) or bool(local_sticky),
                     )
-                    return {
-                        "model_result": res,
-                        "usage": use,
-                        "ws_debug": None,
-                        "url_citations": citations,
-                        "web_search_calls": int(billed_q),
-                        "web_search_calls_query": 0,
-                        "web_search_calls_open": 0,
-                        "web_search_calls_unknown": 0,
-                        "web_search_tool_calls_total": int(billed_q),
-                        "flex_meta": {},
-                    }
+                    attempts: list[Dict[str, Any]] = [a1]
 
-                a1 = _do_eval_once(
-                    max_tool_calls=args.max_tool_calls,
-                    extra_user_instructions=None,
-                    second_query_on_uncertainty=bool(args.second_query_on_uncertainty),
-                )
-                attempts: list[Dict[str, Any]] = [a1]
+                    selected = a1
+                    conf1 = str((a1.get("model_result") or {}).get("confidence") or "").strip().lower()
+                    if args.retry_disambiguation_on_low_confidence and conf1 == "low":
+                        retry_used = True
+                        retry_max = int(args.retry_max_tool_calls)
+                        if args.max_tool_calls is not None:
+                            retry_max = max(int(args.max_tool_calls), retry_max)
+                        disambig_prompt = (
+                            "Perform TWO distinct web searches before deciding.\n"
+                            "1) Search for direct platform markers tied to the provided domain (e.g., '<domain> Magento', '<domain> Shopware', '<domain> WooCommerce', '<domain> Shopify').\n"
+                            "2) Search a reputable technology profiler for the domain (e.g., 'builtwith <domain> ecommerce platform' or 'wappalyzer <domain>').\n"
+                            "If evidence conflicts or is not clearly about the provided domain, choose unknown with low confidence.\n"
+                        )
+                        a2 = _do_eval_once(
+                            max_tool_calls=retry_max,
+                            extra_user_instructions=disambig_prompt,
+                            second_query_on_uncertainty=False,
+                        )
+                        attempts.append(a2)
+                        conf2 = str((a2.get("model_result") or {}).get("confidence") or "").strip().lower()
+                        if conf2 and conf2 != "low":
+                            selected = a2
+                            retry_selected = "retry"
 
-                selected = a1
-                conf1 = str((a1.get("model_result") or {}).get("confidence") or "").strip().lower()
-                if args.retry_disambiguation_on_low_confidence and conf1 == "low":
-                    retry_used = True
-                    retry_max = int(args.retry_max_tool_calls)
-                    if args.max_tool_calls is not None:
-                        retry_max = max(int(args.max_tool_calls), retry_max)
-                    disambig_prompt = (
-                        "Perform TWO distinct web searches before deciding.\n"
-                        "1) Search for direct platform markers tied to the provided domain (e.g., '<domain> Magento', '<domain> Shopware', '<domain> WooCommerce', '<domain> Shopify').\n"
-                        "2) Search a reputable technology profiler for the domain (e.g., 'builtwith <domain> ecommerce platform' or 'wappalyzer <domain>').\n"
-                        "If evidence conflicts or is not clearly about the provided domain, choose unknown with low confidence.\n"
+                    model_result = selected["model_result"]
+                    usage = selected["usage"]
+                    url_citations = selected["url_citations"]
+                    ws_debug = selected["ws_debug"] if args.debug_web_search else None
+
+                    # Aggregate tool usage across attempts (billing happens for both calls).
+                    web_search_calls = sum(int(a.get("web_search_calls", 0) or 0) for a in attempts)
+                    web_search_calls_query = sum(int(a.get("web_search_calls_query", 0) or 0) for a in attempts)
+                    web_search_calls_open = sum(int(a.get("web_search_calls_open", 0) or 0) for a in attempts)
+                    web_search_calls_unknown = sum(int(a.get("web_search_calls_unknown", 0) or 0) for a in attempts)
+                    web_search_tool_calls_total = sum(int(a.get("web_search_tool_calls_total", 0) or 0) for a in attempts)
+
+                    # Aggregate usage + token cost across attempts.
+                    usage_input_tokens = sum(int(a["usage"].input_tokens) for a in attempts)
+                    usage_output_tokens = sum(int(a["usage"].output_tokens) for a in attempts)
+                    usage_total_tokens = sum(int(a["usage"].total_tokens) for a in attempts)
+                    cached_tokens = sum(
+                        int(getattr(getattr(a["usage"], "input_tokens_details", None), "cached_tokens", 0) or 0)
+                        for a in attempts
                     )
-                    a2 = _do_eval_once(
-                        max_tool_calls=retry_max,
-                        extra_user_instructions=disambig_prompt,
-                        second_query_on_uncertainty=False,
+                    reasoning_tokens = sum(
+                        int(getattr(getattr(a["usage"], "output_tokens_details", None), "reasoning_tokens", 0) or 0)
+                        for a in attempts
                     )
-                    attempts.append(a2)
-                    conf2 = str((a2.get("model_result") or {}).get("confidence") or "").strip().lower()
-                    if conf2 and conf2 != "low":
-                        selected = a2
-                        retry_selected = "retry"
+                    token_cost_usd_raw = sum(compute_cost_usd(a["usage"], pricing) for a in attempts)
+                    token_cost_usd = (token_cost_usd_raw * flex_discount) if apply_flex_discount else token_cost_usd_raw
 
-                model_result = selected["model_result"]
-                usage = selected["usage"]
-                url_citations = selected["url_citations"]
-                ws_debug = selected["ws_debug"] if args.debug_web_search else None
-
-                # Aggregate tool usage across attempts (billing happens for both calls).
-                web_search_calls = sum(int(a.get("web_search_calls", 0) or 0) for a in attempts)
-                web_search_calls_query = sum(int(a.get("web_search_calls_query", 0) or 0) for a in attempts)
-                web_search_calls_open = sum(int(a.get("web_search_calls_open", 0) or 0) for a in attempts)
-                web_search_calls_unknown = sum(int(a.get("web_search_calls_unknown", 0) or 0) for a in attempts)
-                web_search_tool_calls_total = sum(int(a.get("web_search_tool_calls_total", 0) or 0) for a in attempts)
-
-                # Aggregate usage + token cost across attempts.
-                usage_input_tokens = sum(int(a["usage"].input_tokens) for a in attempts)
-                usage_output_tokens = sum(int(a["usage"].output_tokens) for a in attempts)
-                usage_total_tokens = sum(int(a["usage"].total_tokens) for a in attempts)
-                cached_tokens = sum(
-                    int(getattr(getattr(a["usage"], "input_tokens_details", None), "cached_tokens", 0) or 0) for a in attempts
-                )
-                reasoning_tokens = sum(
-                    int(getattr(getattr(a["usage"], "output_tokens_details", None), "reasoning_tokens", 0) or 0) for a in attempts
-                )
-                token_cost_usd_raw = sum(compute_cost_usd(a["usage"], pricing) for a in attempts)
-                token_cost_usd = (token_cost_usd_raw * flex_discount) if apply_flex_discount else token_cost_usd_raw
-
-                # Flex stats (if available) are best-effort aggregates (debug path only).
-                flex_attempts = sum(int((a.get("flex_meta") or {}).get("attempts", 0) or 0) for a in attempts)
-                flex_retries = sum(int((a.get("flex_meta") or {}).get("retries", 0) or 0) for a in attempts)
-                flex_sleep = sum(float((a.get("flex_meta") or {}).get("sleep_seconds_total", 0.0) or 0.0) for a in attempts)
-                flex_fallback_used = any(bool((a.get("flex_meta") or {}).get("fallback_used", False)) for a in attempts)
+                    # Flex stats (if available) are best-effort aggregates (debug path only).
+                    flex_attempts = sum(int((a.get("flex_meta") or {}).get("attempts", 0) or 0) for a in attempts)
+                    flex_retries = sum(int((a.get("flex_meta") or {}).get("retries", 0) or 0) for a in attempts)
+                    flex_sleep = sum(
+                        float((a.get("flex_meta") or {}).get("sleep_seconds_total", 0.0) or 0.0) for a in attempts
+                    )
+                    flex_fallback_used = any(bool((a.get("flex_meta") or {}).get("fallback_used", False)) for a in attempts)
             except Exception as e:
                 if not args.continue_on_error:
                     raise
@@ -761,6 +874,8 @@ def main() -> int:
                 "reasoning": model_result.get("reasoning"),
                 "url_citations": url_citations,
                 "duration_seconds": duration_seconds,
+                "detector": "local" if local_used else "openai",
+                "local_debug": local_debug if (args.local_first or args.local_only) else None,
                 "flex": {
                     "attempts": flex_attempts,
                     "retries": flex_retries,
@@ -828,8 +943,8 @@ def main() -> int:
                 "reasoning": model_result.get("reasoning"),
                 "url_citations_json": json.dumps(sources, ensure_ascii=False),
                 "rubric_file": args.rubric_file,
-                "model": args.model,
-                "service_tier": args.service_tier,
+                "model": ("local" if ("local_used" in locals() and local_used) else args.model),
+                "service_tier": ("local" if ("local_used" in locals() and local_used) else args.service_tier),
                 "input_tokens": usage_input_tokens,
                 "cached_input_tokens": cached_tokens,
                 "output_tokens": usage_output_tokens,
@@ -854,6 +969,11 @@ def main() -> int:
                 "flex_fallback_used": int(flex_fallback_used),
                 "retry_used": int(bool(retry_used)),
                 "retry_selected": retry_selected,
+                "detector": "local" if local_used else "openai",
+                "local_is_sticky": int(bool(local_sticky)) if (args.local_first or args.local_only) else "",
+                "local_sticky_reasons_json": json.dumps(local_sticky_reasons, ensure_ascii=False)
+                if (args.local_first or args.local_only)
+                else "",
                 "error": error or "",
             }
             if include_bucket:

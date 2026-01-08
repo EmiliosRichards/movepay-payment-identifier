@@ -46,8 +46,11 @@ Indirect hints only (single low-quality directory listing, vague blog mention, a
 
 ## Decision rules (avoid common failure modes)
 
-- **Not a shop**: if the domain does not appear to run a transactional shop (no product catalog/cart/checkout; purely informational/lead-gen),
-  set `shop_presence=not_shop` and set `final_platform=other` (unless you can confirm it is one of the listed platforms, which would imply a shop).
+- **Shop presence semantics (lead qualification)**:
+  - set `shop_presence=shop` if you have evidence that an ecommerce platform is present on the target domain or a clearly-linked shop subdomain under the same root (even if the storefront is limited/coming-soon).
+  - if the only “checkout” is handled entirely by a third-party service (e.g. event registration/donation platforms like eveeno/betterplace) and the target domain does **not** run an ecommerce platform itself, set `shop_presence=not_shop`.
+  - set `shop_presence=not_shop` only if the domain appears purely informational/lead-gen with no evidence of ecommerce platform presence or shop intent.
+  - set `shop_presence=unclear` if you cannot determine.
 - **Target-domain specificity**: evidence must be about the provided domain, not an agency’s other clients.
 - **Conflicts**: if signals disagree and you can’t resolve, output `unknown` with low confidence.
 - **Dead/blocked/parked/ambiguous**: output `unknown` with low confidence.

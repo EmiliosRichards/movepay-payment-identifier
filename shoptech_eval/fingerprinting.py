@@ -149,13 +149,13 @@ def fingerprint_platform(url: str) -> FingerprintResult:
     if has("/bundles/storefront"):
         return FingerprintResult("shopware", "high", signals, shop_hint, final_url, status, err)
 
-    # Magento / Adobe Commerce
+    # Magento / Adobe Commerce (use only stronger markers to avoid false positives)
     mag_hits = 0
-    for s in ("magento_", "mage/", "/static/", "form_key", "/rest/v1/"):
+    for s in ("magento_", "form_key", "/static/frontend/", "/rest/v1/", "/rest/v1/"):
         if has(s):
             signals.append(f"magento:{s}")
             mag_hits += 1
-    if mag_hits >= 1 and (has("magento_") or has("form_key") or has("/rest/v1/")):
+    if mag_hits >= 1 and (has("magento_") or has("form_key") or has("/rest/v1/") or has("/static/frontend/")):
         return FingerprintResult("magento", "high", signals, shop_hint, final_url, status, err)
 
     # WordPress without WooCommerce is useful for "other_platform_label=wordpress" cases.
