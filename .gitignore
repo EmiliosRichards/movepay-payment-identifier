@@ -13,6 +13,7 @@ venv/
 ENV/
 env/
 .env/
+.env
 
 # Keep the template env file in git
 !.env_example
@@ -37,6 +38,10 @@ cov.xml
 
 # Output runs (JSONL/CSV produced by scripts)
 outputs/
+
+# Data exports / PII (keep your raw contact lists out of git)
+data/
+!data/.gitkeep
 
 # === Jupyter / notebooks (optional) ===
 .ipynb_checkpoints/
