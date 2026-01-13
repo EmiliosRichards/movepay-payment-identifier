@@ -16,6 +16,8 @@ from shoptech_eval import (
     evaluate_company_with_usage_and_web_search_debug,
 )
 from shoptech_eval.local_detector import detect_platform_local
+from shoptech_eval.shop_functionality import detect_shop_functionality
+from shoptech_eval.playwright_cart_check import detect_shop_functionality_playwright
 from shoptech_eval.costing import (
     compute_cost_usd,
     compute_web_search_tool_cost_usd,
@@ -387,6 +389,43 @@ def main() -> int:
         help="API-free mode: only run local detection, never call OpenAI (no OPENAI_API_KEY required). Env: SHOPTECH_LOCAL_ONLY=1",
     )
     parser.add_argument(
+        "--check-functional-shop",
+        action="store_true",
+        default=(os.environ.get("SHOPTECH_CHECK_FUNCTIONAL_SHOP", "").strip() in ("1", "true", "TRUE", "yes", "YES")),
+        help=(
+            "Run an additional API-free check for cart/checkout functionality (has_cart_checkout/no_cart_checkout/unclear) "
+            "and write results to outputs. Default off. Env: SHOPTECH_CHECK_FUNCTIONAL_SHOP=1"
+        ),
+    )
+    parser.add_argument(
+        "--check-functional-shop-playwright",
+        action="store_true",
+        default=(os.environ.get("SHOPTECH_CHECK_FUNCTIONAL_SHOP_PLAYWRIGHT", "").strip() in ("1", "true", "TRUE", "yes", "YES")),
+        help=(
+            "Also run a Playwright headless browser cart/checkout check (optional dependency). "
+            "This can catch JS-rendered carts but may be blocked. Env: SHOPTECH_CHECK_FUNCTIONAL_SHOP_PLAYWRIGHT=1"
+        ),
+    )
+    parser.add_argument(
+        "--playwright-fallback-on-blocked",
+        action="store_true",
+        default=(os.environ.get("SHOPTECH_PLAYWRIGHT_FALLBACK_ON_BLOCKED", "").strip() in ("1", "true", "TRUE", "yes", "YES")),
+        help=(
+            "For local detection: if a site is blocked/inaccessible via normal fetch, try a Playwright-rendered HTML fallback "
+            "to recover platform/shop_presence. Optional dependency. Env: SHOPTECH_PLAYWRIGHT_FALLBACK_ON_BLOCKED=1"
+        ),
+    )
+    parser.add_argument(
+        "--playwright-fallback-on-unknown",
+        action="store_true",
+        default=(os.environ.get("SHOPTECH_PLAYWRIGHT_FALLBACK_ON_UNKNOWN", "").strip() in ("1", "true", "TRUE", "yes", "YES")),
+        help=(
+            "For local detection: if platform remains unknown even though the plain fetch succeeded (often JS-heavy), "
+            "try a Playwright-rendered HTML fallback to recover platform/shop_presence. Optional dependency. "
+            "Env: SHOPTECH_PLAYWRIGHT_FALLBACK_ON_UNKNOWN=1"
+        ),
+    )
+    parser.add_argument(
         "--progress-every",
         type=int,
         default=int(os.environ.get("SHOPTECH_PROGRESS_EVERY", "25")),
@@ -478,6 +517,20 @@ def main() -> int:
         "detector",
         "local_is_sticky",
         "local_sticky_reasons_json",
+        "cart_presence",
+        "cart_presence_source",
+        "cart_presence_local",
+        "cart_presence_playwright",
+        "cart_signals_local_json",
+        "cart_signals_playwright_json",
+        "cart_checked_urls_local_json",
+        "cart_checked_urls_playwright_json",
+        "cart_http_status_local",
+        "cart_http_status_playwright",
+        "cart_blocked_reasons_local_json",
+        "cart_blocked_reasons_playwright_json",
+        "cart_error_local",
+        "cart_error_playwright",
         "error",
     ]
     if include_bucket:
@@ -582,6 +635,20 @@ def main() -> int:
             error: str | None = None
             retry_used = False
             retry_selected = "first"
+            cart_presence = ""
+            cart_presence_source = ""
+            cart_local_presence = ""
+            cart_pw_presence = ""
+            cart_local_signals: list[str] = []
+            cart_pw_signals: list[str] = []
+            cart_local_checked: list[str] = []
+            cart_pw_checked: list[str] = []
+            cart_local_http_status: int | None = None
+            cart_pw_http_status: int | None = None
+            cart_local_blocked: list[str] = []
+            cart_pw_blocked: list[str] = []
+            cart_local_error = ""
+            cart_pw_error = ""
             # Totals may include multiple attempts if retry is enabled.
             usage_input_tokens = 0
             usage_output_tokens = 0
@@ -596,13 +663,86 @@ def main() -> int:
             flex_fallback_used = False
 
             try:
+                # Optional: separate functional shop (cart/checkout) check (API-free).
+                if args.check_functional_shop:
+                    try:
+                        fs = detect_shop_functionality(website)
+                        cart_local_presence = str(fs.presence or "")
+                        cart_local_signals = list(fs.signals or [])
+                        cart_local_checked = list(fs.checked_urls or [])
+                        cart_local_http_status = fs.http_status
+                        cart_local_blocked = list(fs.blocked_reasons or [])
+                        cart_local_error = str(fs.error or "")
+                    except Exception as e:
+                        cart_local_presence = "error"
+                        cart_local_signals = [f"error:{type(e).__name__}"]
+                        cart_local_checked = []
+                        cart_local_http_status = None
+                        cart_local_blocked = []
+                        cart_local_error = f"{type(e).__name__}:{e}"
+
+                if args.check_functional_shop and args.check_functional_shop_playwright:
+                    try:
+                        pw = detect_shop_functionality_playwright(website)
+                        cart_pw_presence = str(pw.presence or "")
+                        cart_pw_signals = list(pw.signals or [])
+                        cart_pw_checked = list(pw.checked_urls or [])
+                        cart_pw_http_status = pw.http_status
+                        cart_pw_blocked = list(pw.blocked_reasons or [])
+                        cart_pw_error = str(pw.error or "")
+                    except Exception as e:
+                        cart_pw_presence = "error"
+                        cart_pw_signals = [f"error:{type(e).__name__}"]
+                        cart_pw_checked = []
+                        cart_pw_http_status = None
+                        cart_pw_blocked = []
+                        cart_pw_error = f"{type(e).__name__}:{e}"
+
+                # Combine cart presence from either method.
+                if args.check_functional_shop:
+                    # Prefer "has_cart_checkout" if either finds it.
+                    if cart_local_presence == "has_cart_checkout" or cart_pw_presence == "has_cart_checkout":
+                        cart_presence = "has_cart_checkout"
+                    # If both explicitly say no-cart, accept no-cart.
+                    elif cart_local_presence == "no_cart_checkout" and (cart_pw_presence in ("", "no_cart_checkout", "error")):
+                        cart_presence = "no_cart_checkout"
+                    elif cart_pw_presence == "no_cart_checkout" and cart_local_presence in ("", "error"):
+                        cart_presence = "no_cart_checkout"
+                    # If anything is blocked and we didn't confirm cart, mark blocked.
+                    elif "blocked" in (cart_local_presence, cart_pw_presence):
+                        cart_presence = "blocked"
+                    # If we only have errors, mark error.
+                    elif "error" in (cart_local_presence, cart_pw_presence):
+                        cart_presence = "error"
+                    else:
+                        cart_presence = cart_local_presence or cart_pw_presence or "error"
+
+                    # Source bookkeeping
+                    if cart_presence == "has_cart_checkout":
+                        if cart_local_presence == "has_cart_checkout" and cart_pw_presence == "has_cart_checkout":
+                            cart_presence_source = "both"
+                        elif cart_local_presence == "has_cart_checkout":
+                            cart_presence_source = "local"
+                        elif cart_pw_presence == "has_cart_checkout":
+                            cart_presence_source = "playwright"
+                        else:
+                            cart_presence_source = "unknown"
+                    elif cart_pw_presence:
+                        cart_presence_source = "both" if cart_local_presence else "playwright"
+                    else:
+                        cart_presence_source = "local" if cart_local_presence else ""
+
                 # Optional API-free shortcut
                 local_used = False
                 local_debug = None
                 local_sticky = False
                 local_sticky_reasons: list[str] = []
                 if args.local_first or args.local_only:
-                    ld = detect_platform_local(website)
+                    ld = detect_platform_local(
+                        website,
+                        playwright_fallback_on_blocked=bool(args.playwright_fallback_on_blocked),
+                        playwright_fallback_on_unknown=bool(args.playwright_fallback_on_unknown),
+                    )
                     local_result = ld.model_result
                     local_debug = ld.debug
                     sticky = (local_debug or {}).get("sticky") if isinstance(local_debug, dict) else {}
@@ -669,7 +809,7 @@ def main() -> int:
                                 if isinstance(a, dict) and a.get("url"):
                                     cand_urls.append(str(a["url"]))
                         sticky = local_debug.get("sticky") or {}
-                        reasons = []
+                        reasons: list[str] = []
                         if isinstance(sticky, dict):
                             reasons = list(sticky.get("reasons") or [])
                         local_hint = (
@@ -679,6 +819,7 @@ def main() -> int:
                             + "Please open the target domain (and any candidate shop URLs) and look for direct HTML/asset markers and cart/checkout presence.\n"
                             + "If direct HTML markers are missing due to JS/bot protection, run a technology-profiler query (e.g. 'builtwith <domain>' or 'wappalyzer <domain>') and use that as Tier B evidence.\n"
                         )
+
                     def _do_eval_once(
                         *,
                         max_tool_calls: int | None,
@@ -817,7 +958,9 @@ def main() -> int:
                     flex_sleep = sum(
                         float((a.get("flex_meta") or {}).get("sleep_seconds_total", 0.0) or 0.0) for a in attempts
                     )
-                    flex_fallback_used = any(bool((a.get("flex_meta") or {}).get("fallback_used", False)) for a in attempts)
+                    flex_fallback_used = any(
+                        bool((a.get("flex_meta") or {}).get("fallback_used", False)) for a in attempts
+                    )
             except Exception as e:
                 if not args.continue_on_error:
                     raise
@@ -876,6 +1019,30 @@ def main() -> int:
                 "duration_seconds": duration_seconds,
                 "detector": "local" if local_used else "openai",
                 "local_debug": local_debug if (args.local_first or args.local_only) else None,
+                "cart_check": {
+                    "presence": cart_presence,
+                    "source": cart_presence_source,
+                    "local": {
+                        "presence": cart_local_presence,
+                        "signals": cart_local_signals,
+                        "checked_urls": cart_local_checked,
+                        "http_status": cart_local_http_status,
+                        "blocked_reasons": cart_local_blocked,
+                        "error": cart_local_error,
+                    },
+                    "playwright": {
+                        "presence": cart_pw_presence,
+                        "signals": cart_pw_signals,
+                        "checked_urls": cart_pw_checked,
+                        "http_status": cart_pw_http_status,
+                        "blocked_reasons": cart_pw_blocked,
+                        "error": cart_pw_error,
+                    }
+                    if args.check_functional_shop_playwright
+                    else None,
+                }
+                if args.check_functional_shop
+                else None,
                 "flex": {
                     "attempts": flex_attempts,
                     "retries": flex_retries,
@@ -974,6 +1141,20 @@ def main() -> int:
                 "local_sticky_reasons_json": json.dumps(local_sticky_reasons, ensure_ascii=False)
                 if (args.local_first or args.local_only)
                 else "",
+                "cart_presence": cart_presence,
+                "cart_presence_source": cart_presence_source,
+                "cart_presence_local": cart_local_presence,
+                "cart_presence_playwright": cart_pw_presence,
+                "cart_signals_local_json": json.dumps(cart_local_signals, ensure_ascii=False),
+                "cart_signals_playwright_json": json.dumps(cart_pw_signals, ensure_ascii=False),
+                "cart_checked_urls_local_json": json.dumps(cart_local_checked, ensure_ascii=False),
+                "cart_checked_urls_playwright_json": json.dumps(cart_pw_checked, ensure_ascii=False),
+                "cart_http_status_local": "" if cart_local_http_status is None else int(cart_local_http_status),
+                "cart_http_status_playwright": "" if cart_pw_http_status is None else int(cart_pw_http_status),
+                "cart_blocked_reasons_local_json": json.dumps(cart_local_blocked, ensure_ascii=False),
+                "cart_blocked_reasons_playwright_json": json.dumps(cart_pw_blocked, ensure_ascii=False),
+                "cart_error_local": cart_local_error,
+                "cart_error_playwright": cart_pw_error,
                 "error": error or "",
             }
             if include_bucket:

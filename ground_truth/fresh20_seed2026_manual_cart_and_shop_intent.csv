@@ -1,0 +1,21 @@
+created_at,name,website,model_final_platform,model_other_platform_label,model_shop_presence,model_cart_presence,model_cart_presence_source,model_cart_blocked_reasons_local_json,model_cart_error_local,model_cart_http_status_local,model_cart_blocked_reasons_playwright_json,model_cart_error_playwright,model_cart_http_status_playwright,gt_has_cart,gt_shop_intent,gt_notes
+2026-01-13T09:25:46,Lemme,http://www.lemme-datensysteme.de,other,wordpress,not_shop,no_cart_checkout,local,[],,200,[],,,unclear,unclear,'site under maintenance'
+2026-01-13T09:25:46,Georg Teichmann Racing GmbH,http://www.teichmann-racing.de,other,wordpress,not_shop,blocked,local,"[""bot_protection_challenge""]",,200,[],,,no_cart,yes,'services by inquiry'
+2026-01-13T09:25:46,Weingut Deutzerhof,http://www.deutzerhof.de,unknown,,unclear,error,local,[],HTTPError:HTTP Error 403: Forbidden,,[],,,error,unclear,'this site cant be reached'
+2026-01-13T09:25:46,Aqualogistik,http://www.aqualogistik.com,woocommerce,,shop,has_cart_checkout,local,[],,,[],,,no_cart,yes,'order by email'
+2026-01-13T09:25:46,gotomaxx ERechnung,http://www.gotomaxx.com,woocommerce,,shop,has_cart_checkout,local,[],,,[],,,has_cart,yes,
+2026-01-13T09:25:46,INOR Transmitter GmbH,http://www.inor-gmbh.de,woocommerce,,shop,no_cart_checkout,local,[],,200,[],,,no_cart,yes,'order by email/ phone'
+2026-01-13T09:25:46,MONOPTEROS,http://www.monopteros.net,other,wordpress,shop,has_cart_checkout,local,[],,200,[],,,no_cart,yes,'its a company with servies but not a clear cut shop to be honest - if system misses this its probably okay'
+2026-01-13T09:25:46,Benlex GmbH,http://www.benlex.de,woocommerce,,shop,has_cart_checkout,local,[],,200,[],,,no_cart,yes,'order by email'
+2026-01-13T09:25:46,Witte + Sutor GmbH,http://www.acculux.de,woocommerce,,shop,has_cart_checkout,local,[],,200,[],,,has_cart,yes,
+2026-01-13T09:25:46,Sozialer Arbeitskreis SAK Sozialdienst,http://www.sak-rheinfelden.de,unknown,,unclear,no_cart_checkout,local,[],,200,[],,,unclear,unclear,'site under maintenance'
+2026-01-13T09:25:46,EHINGER ENERGIE GmbH & Co. KG,http://www.ehinger-energie.de,other,wordpress,not_shop,no_cart_checkout,local,[],,200,[],,,has_cart,yes,'there are sales and services involved with the company and a button for cart but it didnt work'
+2026-01-13T09:25:46,Tierschutzverein Giessen,http://www.tsv-giessen.de,woocommerce,,shop,has_cart_checkout,local,[],,200,[],,,no_cart,no,'animal shelter'
+2026-01-13T09:25:46,LGL Solar,http://www.lgl-solar.de,other,wordpress,not_shop,blocked,local,"[""bot_protection_challenge""]",,200,[],,,no_cart,yes,'services by inquiry - not a proper shop but yeah'
+2026-01-13T09:25:46,Little Things Factory GmbH,http://www.ltf-gmbh.com,woocommerce,,shop,blocked,local,"[""bot_protection_challenge""]",,200,[],,,no_cart,yes,'products by inquiry '
+2026-01-13T09:25:46,INZTITUT GmbH,http://www.inztitut.de,woocommerce,,shop,no_cart_checkout,local,[],,200,[],,,no_cart,yes,'services by inquiry'
+2026-01-13T09:25:46,Steuerberater Träger & Weber PartG,http://www.traeger-weber.de,woocommerce,,shop,has_cart_checkout,local,[],,,[],,,no_cart,yes,'services by inquiry - but not a proper shop'
+2026-01-13T09:25:46,DZ Lagertechnik,http://www.dz-lagertechnik.de,unknown,,unclear,error,local,[],URLError:<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1006)>,,[],,,has_cart,yes,'proper shop'
+2026-01-13T09:25:46,Gabriele Tillmann,http://www.praxis-tillmann.de,woocommerce,,shop,blocked,local,"[""bot_protection_challenge""]",,200,[],,,no_cart,no,'just a basic address page - no info - impressum link'
+2026-01-13T09:25:46,Star Online Shop,http://www.staronlineshop.de,other,wordpress,not_shop,blocked,local,"[""fetch_error""]",HTTPError:HTTP Error 404: Not Found,,[],,,unclear,unclear,'site in maintenance mode'
+2026-01-13T09:25:46,usb-designer.de,http://www.usb-designer.de,woocommerce,,shop,has_cart_checkout,local,[],,,[],,,has_cart,yes,

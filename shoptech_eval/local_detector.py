@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import ssl
 import urllib.parse
@@ -8,7 +9,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 from .dns_probe import probe_shopify_cname
-from .fingerprinting import fingerprint_platform
+from .fingerprinting import fingerprint_platform, fingerprint_platform_from_html
+from .playwright_fetch import fetch_html_playwright
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,78 @@ def _fetch_html(
         return u, None, "", {}, f"{type(e).__name__}:{e}"
 
 
+def _probe_shopify_cart_js(host: str, *, timeout_seconds: float = 8.0) -> Tuple[bool, str]:
+    """
+    Shopify stores typically expose /cart.js returning a JSON cart object.
+    This is a strong, cheap "functional shop" signal when reachable.
+    Returns (hit, debug_reason).
+    """
+    h = (host or "").strip().lower().strip(".")
+    if not h:
+        return False, "empty_host"
+    url = f"https://{h}/cart.js"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) shoptech-local-detector/1.0",
+            "Accept": "application/json,text/javascript,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=float(timeout_seconds), context=ssl.create_default_context()) as resp:
+            status = int(getattr(resp, "status", 0) or 0)
+            body = (resp.read(200_000) or b"").decode("utf-8", errors="replace")
+            if status != 200 or not body.strip():
+                return False, f"status_{status}"
+            try:
+                obj = json.loads(body)
+            except Exception:
+                return False, "json_parse_failed"
+            if isinstance(obj, dict) and "items" in obj:
+                return True, "cart_js_items"
+            return False, "json_no_items"
+    except Exception as e:
+        return False, f"{type(e).__name__}:{e}"
+
+
+def _probe_wc_store_api_products(host: str, *, timeout_seconds: float = 8.0) -> Tuple[bool, str]:
+    """
+    WooCommerce Store API is commonly exposed at /wp-json/wc/store/products.
+    If reachable + returns JSON, it is a strong indication of WooCommerce storefront capability.
+    Returns (hit, reason). "hit" means we got a plausible JSON response from the endpoint.
+    """
+    h = (host or "").strip().lower().strip(".")
+    if not h:
+        return False, "empty_host"
+    url = f"https://{h}/wp-json/wc/store/products?per_page=1"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) shoptech-local-detector/1.0",
+            "Accept": "application/json,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=float(timeout_seconds), context=ssl.create_default_context()) as resp:
+            status = int(getattr(resp, "status", 0) or 0)
+            body = (resp.read(250_000) or b"").decode("utf-8", errors="replace")
+            if status != 200 or not body.strip():
+                return False, f"status_{status}"
+            try:
+                obj = json.loads(body)
+            except Exception:
+                return False, "json_parse_failed"
+            if isinstance(obj, list):
+                return True, f"list_len_{len(obj)}"
+            if isinstance(obj, dict) and ("products" in obj or "items" in obj):
+                return True, "dict_products_like"
+            return True, "json_other_shape"
+    except Exception as e:
+        return False, f"{type(e).__name__}:{e}"
+
+
 def _extract_shop_links(base_url: str, html: str, *, limit: int = 15) -> List[str]:
     """
     Find likely shop/cart links from a homepage HTML snippet.
@@ -70,7 +144,30 @@ def _extract_shop_links(base_url: str, html: str, *, limit: int = 15) -> List[st
     if not html:
         return []
     hrefs = re.findall(r"""href\s*=\s*["']([^"']+)["']""", html, flags=re.I)
-    keys = ("shop", "store", "warenkorb", "cart", "checkout", "kasse", "tickets", "voucher", "gutschein")
+    keys = (
+        # Explicit shop flows
+        "shop",
+        "store",
+        "webshop",
+        "onlineshop",
+        "online-shop",
+        # Cart/checkout words
+        "warenkorb",
+        "cart",
+        "checkout",
+        "kasse",
+        # Product/order intent
+        "produkt",
+        "produkte",
+        "product",
+        "products",
+        "kaufen",
+        "bestellen",
+        # Ticketing/vouchers (still ecommerce-ish)
+        "tickets",
+        "voucher",
+        "gutschein",
+    )
     out: List[str] = []
     for href in hrefs:
         low = (href or "").lower()
@@ -95,13 +192,27 @@ def _subdomain_candidates(host: str) -> List[str]:
     return list(dict.fromkeys(cands))
 
 
-def detect_platform_local(url: str) -> LocalDetectResult:
+def detect_platform_local(
+    url: str,
+    *,
+    shop_presence_mode: str = "installed",
+    enable_wc_store_api_probe: bool = False,
+    cautious_on_sticky: bool = False,
+    playwright_fallback_on_blocked: bool = False,
+    playwright_fallback_on_unknown: bool = False,
+) -> LocalDetectResult:
     """
     API-free local detector:
     - DNS hint for Shopify via CNAME
     - Direct HTML fingerprinting
     - If unclear, follow likely "shop" links and probe common shop subdomains
     """
+    # shop_presence_mode semantics:
+    # - installed: treat strong platform presence as "shop" even if checkout/cart isn't obvious
+    # - functional: require stronger cart/checkout/product evidence before calling it a shop
+    mode = (shop_presence_mode or "installed").strip().lower()
+    if mode not in ("installed", "functional"):
+        mode = "installed"
     input_url = _normalize_url(url)
     host = _host_from_url(input_url)
 
@@ -116,10 +227,11 @@ def detect_platform_local(url: str) -> LocalDetectResult:
     dns_hit = probe_shopify_cname(host) if host else None
     if dns_hit and dns_hit.shopify_cname:
         debug["dns_shopify"] = {"host": dns_hit.host, "shopify_cname": dns_hit.shopify_cname, "error": dns_hit.error}
+        shop_presence = "shop" if mode == "installed" else "unclear"
         model_result = {
             "input_url": input_url,
             "final_platform": "shopify",
-            "shop_presence": "shop",
+            "shop_presence": shop_presence,
             "other_platform_label": "",
             "confidence": "high",
             "evidence_tier": "A",
@@ -127,6 +239,23 @@ def detect_platform_local(url: str) -> LocalDetectResult:
             "reasoning": "DNS CNAME indicates Shopify (myshopify).",
         }
         return LocalDetectResult(model_result=model_result, debug=debug)
+
+    # 1b) Shopify cart.js probe (strong functional signal when reachable)
+    if host:
+        hit, why = _probe_shopify_cart_js(host)
+        debug["shopify_cart_js_probe"] = {"hit": bool(hit), "reason": why}
+        if hit:
+            model_result = {
+                "input_url": input_url,
+                "final_platform": "shopify",
+                "shop_presence": "shop",
+                "other_platform_label": "",
+                "confidence": "high",
+                "evidence_tier": "A",
+                "signals": ["shopify:/cart.js"],
+                "reasoning": "Shopify cart endpoint indicates a functional Shopify shop.",
+            }
+            return LocalDetectResult(model_result=model_result, debug=debug)
 
     # 2) Homepage fetch for link discovery + header hints
     base_final, base_status, base_html, base_headers, base_err = _fetch_html(input_url)
@@ -153,6 +282,54 @@ def detect_platform_local(url: str) -> LocalDetectResult:
     if sticky_reasons:
         debug["sticky"] = {"is_sticky": True, "reasons": sticky_reasons}
 
+    # Optional: Playwright fallback for blocked/inaccessible sites.
+    # Only attempt when the normal fetch looks sticky/blocked or errored.
+    if playwright_fallback_on_blocked and (not base_html or sticky_reasons):
+        pw = fetch_html_playwright(base_final or input_url)
+        debug["playwright_fetch"] = {
+            "ok": bool(pw.ok),
+            "final_url": pw.final_url,
+            "status": pw.status,
+            "error": pw.error,
+            "blocked_reasons": pw.blocked_reasons,
+            "html_chars": len(pw.html_lower or ""),
+        }
+        if pw.ok and pw.html_lower:
+            fp_pw = fingerprint_platform_from_html(
+                html_lower=pw.html_lower,
+                final_url=pw.final_url or (base_final or input_url),
+                status=pw.status,
+                error="",
+                shop_presence_mode=mode,
+            )
+            debug["attempts"].append(
+                {
+                    "url": fp_pw.final_url,
+                    "status": fp_pw.status,
+                    "platform": fp_pw.platform,
+                    "confidence": fp_pw.confidence,
+                    "shop_hint": fp_pw.shop_presence_hint,
+                    "signals": fp_pw.signals,
+                    "error": fp_pw.error,
+                    "via": "playwright",
+                }
+            )
+            if fp_pw.platform in ("woocommerce", "shopify", "shopware", "magento"):
+                sp = "shop" if mode == "installed" else (fp_pw.shop_presence_hint or "unclear")
+                return LocalDetectResult(
+                    model_result={
+                        "input_url": input_url,
+                        "final_platform": fp_pw.platform,
+                        "shop_presence": sp,
+                        "other_platform_label": "",
+                        "confidence": fp_pw.confidence,
+                        "evidence_tier": "A" if fp_pw.confidence in ("high", "medium") else "C",
+                        "signals": fp_pw.signals[:8],
+                        "reasoning": "Local HTML fingerprinting (via Playwright fallback).",
+                    },
+                    debug=debug,
+                )
+
     # Header/cookie hints for Shopify
     set_cookie = base_headers.get("set-cookie", "")
     if "_shopify" in set_cookie or "shopify" in (base_headers.get("server", "") + " " + base_headers.get("x-powered-by", "")):
@@ -169,7 +346,7 @@ def detect_platform_local(url: str) -> LocalDetectResult:
         return LocalDetectResult(model_result=model_result, debug=debug)
 
     # 3) Fingerprint homepage
-    fp0 = fingerprint_platform(base_final or input_url)
+    fp0 = fingerprint_platform(base_final or input_url, shop_presence_mode=mode)
     debug["attempts"].append(
         {
             "url": base_final or input_url,
@@ -195,8 +372,15 @@ def detect_platform_local(url: str) -> LocalDetectResult:
         }
 
     if fp0.platform in ("woocommerce", "shopify", "shopware", "magento"):
+        sp = "shop" if mode == "installed" else (fp0.shop_presence_hint or "unclear")
         return LocalDetectResult(
-            model_result=_as_model_result(fp0.platform, fp0.signals, shop_presence="shop", confidence=fp0.confidence, other_label=""),
+            model_result=_as_model_result(
+                fp0.platform,
+                fp0.signals,
+                shop_presence=sp,
+                confidence=fp0.confidence,
+                other_label="",
+            ),
             debug=debug,
         )
 
@@ -207,14 +391,38 @@ def detect_platform_local(url: str) -> LocalDetectResult:
     if fp0.platform == "other":
         other_label = "wordpress" if any(s.startswith("wordpress:") for s in fp0.signals) else ""
         # If the homepage itself has strong shop signals, we can accept "other" as a shop-ish site.
-        shop_presence = "shop" if fp0.shop_presence_hint == "shop" else "not_shop"
+        if (
+            cautious_on_sticky
+            and mode == "functional"
+            and bool((debug.get("sticky") or {}).get("is_sticky", False))
+        ):
+            shop_presence = "unclear"
+        else:
+            shop_presence = "shop" if fp0.shop_presence_hint == "shop" else "not_shop"
         tentative_other = _as_model_result(
             "other", fp0.signals, shop_presence=shop_presence, confidence=fp0.confidence, other_label=other_label
         )
 
+    # 3b) Optional: if we saw WooCommerce assets but shop presence is unclear/not_shop, probe the Woo Store API.
+    # This can improve recall on some sites, but may increase false positives (plugin installed but no obvious checkout).
+    if enable_wc_store_api_probe and mode == "functional" and host and any(s.startswith("woocommerce:") for s in fp0.signals):
+        hit, why = _probe_wc_store_api_products(host)
+        debug["wc_store_api_probe"] = {"hit": bool(hit), "reason": why}
+        if hit:
+            return LocalDetectResult(
+                model_result=_as_model_result(
+                    "woocommerce",
+                    fp0.signals + [f"woocommerce:store_api:{why}"],
+                    shop_presence="shop",
+                    confidence="medium",
+                    other_label="",
+                ),
+                debug=debug,
+            )
+
     # 4) Follow likely shop links on the homepage
     for link in _extract_shop_links(base_final or input_url, base_html):
-        fp = fingerprint_platform(link)
+        fp = fingerprint_platform(link, shop_presence_mode=mode)
         debug["attempts"].append(
             {
                 "url": link,
@@ -226,15 +434,22 @@ def detect_platform_local(url: str) -> LocalDetectResult:
             }
         )
         if fp.platform in ("woocommerce", "shopify", "shopware", "magento"):
+            sp = "shop" if mode == "installed" else (fp.shop_presence_hint or "unclear")
             return LocalDetectResult(
-                model_result=_as_model_result(fp.platform, fp.signals, shop_presence="shop", confidence=fp.confidence, other_label=""),
+                model_result=_as_model_result(
+                    fp.platform,
+                    fp.signals,
+                    shop_presence=sp,
+                    confidence=fp.confidence,
+                    other_label="",
+                ),
                 debug=debug,
             )
 
     # 5) Probe common shop subdomains (shop./store./webshop.)
     for sub_host in _subdomain_candidates(host):
         sub_url = f"https://{sub_host}/"
-        fp = fingerprint_platform(sub_url)
+        fp = fingerprint_platform(sub_url, shop_presence_mode=mode)
         debug["attempts"].append(
             {
                 "url": sub_url,
@@ -246,13 +461,68 @@ def detect_platform_local(url: str) -> LocalDetectResult:
             }
         )
         if fp.platform in ("woocommerce", "shopify", "shopware", "magento"):
+            sp = "shop" if mode == "installed" else (fp.shop_presence_hint or "unclear")
             return LocalDetectResult(
-                model_result=_as_model_result(fp.platform, fp.signals, shop_presence="shop", confidence=fp.confidence, other_label=""),
+                model_result=_as_model_result(
+                    fp.platform,
+                    fp.signals,
+                    shop_presence=sp,
+                    confidence=fp.confidence,
+                    other_label="",
+                ),
                 debug=debug,
             )
 
     if tentative_other is not None:
         return LocalDetectResult(model_result=tentative_other, debug=debug)
+
+    # Optional: Playwright fallback for JS-heavy pages where the plain fetch succeeded but fingerprints were inconclusive.
+    # Only attempt when we would otherwise return unknown.
+    if playwright_fallback_on_unknown:
+        # Avoid double-running if we already did a Playwright fetch above.
+        if not isinstance(debug.get("playwright_fetch"), dict):
+            pw = fetch_html_playwright(base_final or input_url)
+            debug["playwright_fetch"] = {
+                "ok": bool(pw.ok),
+                "final_url": pw.final_url,
+                "status": pw.status,
+                "error": pw.error,
+                "blocked_reasons": pw.blocked_reasons,
+                "html_chars": len(pw.html_lower or ""),
+            }
+            if pw.ok and pw.html_lower:
+                fp_pw = fingerprint_platform_from_html(
+                    html_lower=pw.html_lower,
+                    final_url=pw.final_url or (base_final or input_url),
+                    status=pw.status,
+                    error="",
+                    shop_presence_mode=mode,
+                )
+                debug["attempts"].append(
+                    {
+                        "url": fp_pw.final_url,
+                        "status": fp_pw.status,
+                        "platform": fp_pw.platform,
+                        "confidence": fp_pw.confidence,
+                        "shop_hint": fp_pw.shop_presence_hint,
+                        "signals": fp_pw.signals,
+                        "error": fp_pw.error,
+                        "via": "playwright",
+                    }
+                )
+                if fp_pw.platform in ("woocommerce", "shopify", "shopware", "magento"):
+                    sp = "shop" if mode == "installed" else (fp_pw.shop_presence_hint or "unclear")
+                    model_result = {
+                        "input_url": input_url,
+                        "final_platform": fp_pw.platform,
+                        "shop_presence": sp,
+                        "other_platform_label": "",
+                        "confidence": fp_pw.confidence,
+                        "evidence_tier": "A" if fp_pw.confidence in ("high", "medium") else "C",
+                        "signals": fp_pw.signals[:8],
+                        "reasoning": "Local HTML fingerprinting (via Playwright fallback).",
+                    }
+                    return LocalDetectResult(model_result=model_result, debug=debug)
 
     # 6) Give up (unknown)
     model_result = {

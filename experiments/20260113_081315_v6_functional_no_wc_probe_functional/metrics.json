@@ -1,0 +1,17 @@
+{
+  "shop_presence": {
+    "total": 20,
+    "correct": 8,
+    "confusion": {
+      "shop": {
+        "shop": 5,
+        "not_shop": 2
+      },
+      "not_shop": {
+        "shop": 5,
+        "not_shop": 3,
+        "unclear": 5
+      }
+    }
+  }
+}

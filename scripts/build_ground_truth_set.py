@@ -25,6 +25,14 @@ def main() -> int:
     ap.add_argument("--in-csv", required=True, help="Input run CSV (outputs/<run>.csv)")
     ap.add_argument("--out-csv", required=True, help="Output ground truth worksheet CSV (e.g. ground_truth/<name>.csv)")
     ap.add_argument("--limit", type=int, default=0, help="Optional cap on number of rows (0 = all)")
+    ap.add_argument("--sample", type=int, default=0, help="Randomly sample N rows (0 = disabled)")
+    ap.add_argument("--seed", type=int, default=42, help="RNG seed for --sample (default 42)")
+    ap.add_argument(
+        "--balanced-sticky",
+        action="store_true",
+        default=False,
+        help="If input has local_is_sticky, sample 50/50 sticky/non-sticky when using --sample.",
+    )
     ap.add_argument("--sleep", type=float, default=0.2, help="Seconds to sleep between fetches (default 0.2)")
     args = ap.parse_args()
 
@@ -33,6 +41,25 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows = list(csv.DictReader(in_path.open("r", encoding="utf-8", newline="")))
+
+    # Optional random sampling (deterministic via seed).
+    if args.sample and int(args.sample) > 0:
+        import random
+
+        k = int(args.sample)
+        rng = random.Random(int(args.seed))
+        if args.balanced_sticky and any("local_is_sticky" in r for r in rows):
+            sticky = [r for r in rows if str(r.get("local_is_sticky") or "").strip() == "1"]
+            non = [r for r in rows if str(r.get("local_is_sticky") or "").strip() != "1"]
+            rng.shuffle(sticky)
+            rng.shuffle(non)
+            half = k // 2
+            rows = sticky[:half] + non[: (k - half)]
+            rng.shuffle(rows)
+        else:
+            rng.shuffle(rows)
+            rows = rows[:k]
+
     if args.limit and int(args.limit) > 0:
         rows = rows[: int(args.limit)]
     if not rows:
@@ -49,6 +76,9 @@ def main() -> int:
         "model_other_platform_label",
         "model_confidence",
         "model_evidence_tier",
+        "model_detector",
+        "local_is_sticky",
+        "local_sticky_reasons_json",
         # independent fingerprinting
         "fp_platform",
         "fp_confidence",
@@ -85,6 +115,9 @@ def main() -> int:
                 "model_other_platform_label": (r.get("other_platform_label") or "").strip(),
                 "model_confidence": (r.get("confidence") or "").strip(),
                 "model_evidence_tier": (r.get("evidence_tier") or "").strip(),
+                "model_detector": (r.get("detector") or "").strip(),
+                "local_is_sticky": (r.get("local_is_sticky") or "").strip(),
+                "local_sticky_reasons_json": (r.get("local_sticky_reasons_json") or "").strip(),
                 "fp_platform": fp.platform,
                 "fp_confidence": fp.confidence,
                 "fp_status": "" if fp.status is None else str(fp.status),

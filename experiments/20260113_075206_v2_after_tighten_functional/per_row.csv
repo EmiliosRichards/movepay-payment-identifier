@@ -1,0 +1,21 @@
+website,name,gt_shop_presence,pred_shop_presence,pred_final_platform,pred_confidence,pred_signals_json,sticky,sticky_reasons_json,gt_notes
+http://www.taverna-lippstadt.de,Taverna Lippstadt Wir,shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",1,"[""bot_protection_challenge""]",shop
+http://www.aluxil.com,Aluxil GmbH,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",1,"[""bot_protection_challenge""]",no cart or checkout
+http://www.rinnetal.com,Autohaus Rinnetal GmbH,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",1,"[""bot_protection_challenge""]","shop but not online, seems like you send message or email"
+http://www.donaubergland.de,Donaubergland Highlights,not_shop,not_shop,other,medium,"[""wordpress:wp-content/wp-includes/wp-json""]",0,[],no cart or checkout
+http://www.kanzlei-steinert.de,Kanzlei Steinert,not_shop,not_shop,other,medium,"[""wordpress:wp-content/wp-includes/wp-json""]",1,"[""bot_protection_challenge""]",no cart or checkout
+http://www.laserglueck.de,Marion Delitsch Dekoration,shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",0,[],shop
+http://www.pro-gourmet.de,Pro Gourmet,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",1,"[""bot_protection_challenge""]",no shop
+http://www.fischer-draht.de,Fischer-Draht GmbH,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",0,[],order by mail
+http://www.opelit.de,Opelit Bikes,shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",1,"[""bot_protection_challenge""]",shop
+http://www.mueritzer-kerzenmanufaktur.de,Ralf-Peter Dumstrey Traditionswerkstatt,shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params"", ""woocommerce:wc-cart-fragments""]",0,[],shop
+http://www.agentur-emilian.de,Agentur Emilian,not_shop,unclear,unknown,low,[],1,"[""bot_protection_challenge""]",book by appointment
+http://www.bmv-med.de,BMV Bender Medical Vertrieb GmbH,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params"", ""woocommerce:wc-cart-fragments""]",1,"[""bot_protection_challenge""]",book by appointment
+http://www.peseschkian-stiftung.de,Prof. Peseschkian-Stiftung,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",1,"[""bot_protection_challenge""]",site mentions shop but no actual shop/cart/checkout functionality
+http://www.skilehrerverband.de,Deutscher Skilehrerverband e.V.,shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params"", ""woocommerce:wc-cart-fragments"", ""woocommerce:woocommerce_items_in_cart""]",0,[],shop
+http://www.essentialkosmetik.de,Essential Kosmetik,not_shop,not_shop,other,medium,"[""wordpress:wp-content/wp-includes/wp-json""]",0,[],no shop
+http://www.rerikerheulbojen.de,Reriker Heulbojen e.V.,shop,shop,woocommerce,high,"[""hint:jsonld_product"", ""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",0,[],shop
+http://www.reger-solutions.de,Reger Solutions,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",1,"[""bot_protection_challenge""]",order by mail
+http://www.innoev.de,inn:öv,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",0,[],no shop
+http://www.hekma-verlag.de,Hekma Verlag,shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params"", ""woocommerce:wc-cart-fragments""]",0,[],shop
+http://www.amviso.com,Amviso GmbH,not_shop,shop,woocommerce,high,"[""woocommerce:wp-content/plugins/woocommerce"", ""woocommerce:woocommerce_params""]",1,"[""bot_protection_challenge""]",by appointment

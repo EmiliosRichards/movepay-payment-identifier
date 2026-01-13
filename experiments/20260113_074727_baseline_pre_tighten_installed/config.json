@@ -1,0 +1,11 @@
+{
+  "created_at": "2026-01-13T07:51:02",
+  "label": "baseline_pre_tighten",
+  "shop_presence_mode": "installed",
+  "gt_csv": "ground_truth\\local100_seed42_gt20.csv",
+  "code": {
+    "git_head": "69bacb0e33564e3d55370afe0218c6880b3e815d",
+    "shoptech_eval/local_detector.py": "66a73f8e0e00e14d8097b5439ff7397b63dbe6c600ccd67d18e2c7ac96c8eb68",
+    "shoptech_eval/fingerprinting.py": "a1eabe2c0f2ca6d3e3857a052a9a7b1c541cad29a25642ccb051a75b96348b33"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "created_at": "2026-01-13T08:18:03",
+  "label": "v6_functional_no_wc_probe",
+  "shop_presence_mode": "functional",
+  "gt_csv": "ground_truth\\local100_seed42_gt20.csv",
+  "code": {
+    "git_head": "69bacb0e33564e3d55370afe0218c6880b3e815d",
+    "shoptech_eval/local_detector.py": "c866481ff4c00089b7f3b3b39263dc80f364109b5108448702bea156abab2e16",
+    "shoptech_eval/fingerprinting.py": "32ef87f7b7c0628b368473b23c02faf0b3b7d6b1782ed81f344d86effa3dab8f"
+  }
+}

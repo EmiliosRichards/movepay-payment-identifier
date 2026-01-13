@@ -1,0 +1,6 @@
+Local-detector shop_presence accuracy snapshot
+- gt_csv: ground_truth\local100_seed42_gt20.csv
+- mode: functional
+- rows_scored: 20
+- accuracy: 8/20 (40.0%)
+- git_head: 69bacb0e33564e3d55370afe0218c6880b3e815d

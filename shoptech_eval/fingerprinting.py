@@ -67,7 +67,122 @@ def _fetch_html(url: str, *, timeout_seconds: float = 12.0, max_bytes: int = 600
         return u, "", None, f"{type(e).__name__}:{e}"
 
 
-def fingerprint_platform(url: str) -> FingerprintResult:
+def fingerprint_platform_from_html(
+    *,
+    html_lower: str,
+    final_url: str,
+    status: Optional[int],
+    error: str,
+    shop_presence_mode: str = "installed",
+) -> FingerprintResult:
+    """
+    Same fingerprinting logic as fingerprint_platform(), but runs on already-fetched HTML.
+    Useful for Playwright-based fetch/render fallbacks.
+    """
+    mode = (shop_presence_mode or "installed").strip().lower()
+    if mode not in ("installed", "functional"):
+        mode = "installed"
+
+    html = (html_lower or "").lower()
+    signals: List[str] = []
+
+    def has(s: str) -> bool:
+        return s in html
+
+    # Shop presence heuristic (best-effort; JS-heavy sites may not expose these in initial HTML)
+    # We separate "strong" vs "weak" indicators so we can tighten behavior when desired.
+    strong_hits: List[str] = []
+    weak_hits: List[str] = []
+
+    # Strong indicators: typically imply real ecommerce *product* behavior (more than just navigation/cart template).
+    for s in (
+        "?add-to-cart=",
+        "add_to_cart_button",
+        "data-product_id",
+    ):
+        if has(s):
+            strong_hits.append(s)
+    if '"@type":"product"' in html or '"@type": "product"' in html:
+        strong_hits.append("jsonld_product")
+        signals.append("hint:jsonld_product")
+
+    # Weak indicators: may appear on brochure sites or templates even without functional checkout.
+    # (We include common cart/checkout words and WooCommerce template classes here.)
+    for s in ("/cart", "/checkout", "warenkorb", "kasse", "checkout", "woocommerce-cart", "woocommerce-checkout", "wc-cart-fragments"):
+        if has(s):
+            weak_hits.append(s)
+
+    shop_hint = "unclear"
+    if mode == "functional":
+        if strong_hits:
+            shop_hint = "shop"
+        elif not weak_hits:
+            shop_hint = "not_shop"
+        else:
+            shop_hint = "unclear"
+    else:
+        if strong_hits or len(weak_hits) >= 2:
+            shop_hint = "shop"
+        elif not weak_hits:
+            shop_hint = "not_shop"
+        else:
+            shop_hint = "unclear"
+
+    if shop_hint == "shop" and (not strong_hits) and weak_hits:
+        signals.append("hint:shop_presence_weak_only")
+
+    # Shopify (strong markers)
+    shopify_hits = 0
+    for s in ("cdn.shopify.com", "myshopify.com", "shopify-section", "shopify.theme", "shopifyanalytics"):
+        if has(s):
+            signals.append(f"shopify:{s}")
+            shopify_hits += 1
+    if shopify_hits >= 1:
+        return FingerprintResult("shopify", "high", signals, shop_hint, final_url, status, error)
+
+    # WooCommerce / WordPress
+    wc_hits = 0
+    for s in ("wp-content/plugins/woocommerce", "woocommerce_params", "wc-cart-fragments", "woocommerce_items_in_cart"):
+        if has(s):
+            signals.append(f"woocommerce:{s}")
+            wc_hits += 1
+    if wc_hits >= 1 and shop_hint == "shop":
+        return FingerprintResult("woocommerce", "high", signals, shop_hint, final_url, status, error)
+    if wc_hits >= 1 and shop_hint != "shop":
+        signals.append("hint:woocommerce_assets_without_shop_signals")
+
+    # Shopware 6 storefront
+    for s in ("/bundles/storefront",):
+        if has(s):
+            signals.append(f"shopware:{s}")
+            return FingerprintResult("shopware", "high", signals, shop_hint, final_url, status, error)
+    if has("shopware"):
+        signals.append("shopware:shopware_word")
+
+    # Magento / Adobe Commerce
+    for s in ("magento_", "form_key", "/static/frontend/", "/rest/v1/", "/rest/v1/"):
+        if has(s):
+            signals.append(f"magento:{s}")
+            return FingerprintResult("magento", "high", signals, shop_hint, final_url, status, error)
+
+    # WordPress without WooCommerce
+    wp_hits = 0
+    for s in ("wp-content/", "wp-includes/", "wp-json/"):
+        if has(s):
+            wp_hits += 1
+    if wp_hits >= 2:
+        signals.append("wordpress:wp-content/wp-includes/wp-json")
+        return FingerprintResult("other", "medium", signals, shop_hint, final_url, status, error)
+
+    if html:
+        if re.search(r"\b(cart|checkout|warenkorb|kasse)\b", html):
+            signals.append("hint:cart/checkout_words_present")
+        return FingerprintResult("inconclusive", "low", signals, shop_hint, final_url, status, error)
+
+    return FingerprintResult("inconclusive", "low", [], shop_hint, final_url, status, error)
+
+
+def fingerprint_platform(url: str, *, shop_presence_mode: str = "installed") -> FingerprintResult:
     """
     A lightweight, independent verifier that looks for strong platform markers in fetched HTML.
 
@@ -75,6 +190,9 @@ def fingerprint_platform(url: str) -> FingerprintResult:
     - This is best-effort and may be blocked by bot protections or require JS rendering.
     - When markers are absent, we return inconclusive rather than guessing.
     """
+    mode = (shop_presence_mode or "installed").strip().lower()
+    if mode not in ("installed", "functional"):
+        mode = "installed"
     final_url, html, status, err = _fetch_html(url)
     if err and not html:
         return FingerprintResult(
@@ -86,94 +204,12 @@ def fingerprint_platform(url: str) -> FingerprintResult:
             status=status,
             error=err,
         )
-
-    signals: List[str] = []
-
-    def has(s: str) -> bool:
-        return s in html
-
-    # Shop presence heuristic (best-effort; JS-heavy sites may not expose these in initial HTML)
-    shop_markers = 0
-    for s in (
-        "add-to-cart",
-        "woocommerce-cart",
-        "woocommerce-checkout",
-        "?add-to-cart=",
-        "/cart",
-        "/checkout",
-        "warenkorb",
-        "kasse",
-        "checkout",
-    ):
-        if has(s):
-            shop_markers += 1
-    if '"@type":"product"' in html or '"@type": "product"' in html:
-        shop_markers += 1
-        signals.append("hint:jsonld_product")
-
-    shop_hint = "unclear"
-    if shop_markers >= 2:
-        shop_hint = "shop"
-    elif shop_markers == 0:
-        shop_hint = "not_shop"
-
-    # Shopify (strong markers)
-    shopify_hits = 0
-    for s in ("cdn.shopify.com", "myshopify.com", "shopify-section", "shopify.theme", "shopifyanalytics"):
-        if has(s):
-            signals.append(f"shopify:{s}")
-            shopify_hits += 1
-    if shopify_hits >= 1:
-        return FingerprintResult("shopify", "high", signals, shop_hint, final_url, status, err)
-
-    # WooCommerce / WordPress
-    wc_hits = 0
-    for s in ("wp-content/plugins/woocommerce", "woocommerce_params", "wc-cart-fragments", "woocommerce_items_in_cart"):
-        if has(s):
-            signals.append(f"woocommerce:{s}")
-            wc_hits += 1
-    # Important: WooCommerce assets can appear even on non-shops (plugin installed but not used).
-    # Require at least some shop presence markers before declaring WooCommerce confidently.
-    if wc_hits >= 1 and shop_hint == "shop":
-        return FingerprintResult("woocommerce", "high", signals, shop_hint, final_url, status, err)
-    if wc_hits >= 1 and shop_hint != "shop":
-        signals.append("hint:woocommerce_assets_without_shop_signals")
-
-    # Shopware 6 storefront
-    sw_hits = 0
-    for s in ("/bundles/storefront", "shopware"):
-        if has(s):
-            signals.append(f"shopware:{s}")
-            sw_hits += 1
-    # Require the storefront bundle path to avoid false positives from generic "shopware" mentions.
-    if has("/bundles/storefront"):
-        return FingerprintResult("shopware", "high", signals, shop_hint, final_url, status, err)
-
-    # Magento / Adobe Commerce (use only stronger markers to avoid false positives)
-    mag_hits = 0
-    for s in ("magento_", "form_key", "/static/frontend/", "/rest/v1/", "/rest/v1/"):
-        if has(s):
-            signals.append(f"magento:{s}")
-            mag_hits += 1
-    if mag_hits >= 1 and (has("magento_") or has("form_key") or has("/rest/v1/") or has("/static/frontend/")):
-        return FingerprintResult("magento", "high", signals, shop_hint, final_url, status, err)
-
-    # WordPress without WooCommerce is useful for "other_platform_label=wordpress" cases.
-    wp_hits = 0
-    for s in ("wp-content/", "wp-includes/", "wp-json/"):
-        if has(s):
-            wp_hits += 1
-    if wp_hits >= 2:
-        signals.append("wordpress:wp-content/wp-includes/wp-json")
-        return FingerprintResult("other", "medium", signals, shop_hint, final_url, status, err)
-
-    # If we got a page but can't identify, mark inconclusive.
-    if html:
-        # Very weak ecommerce heuristic: presence of cart/checkout strings
-        if re.search(r"\b(cart|checkout|warenkorb|kasse)\b", html):
-            signals.append("hint:cart/checkout_words_present")
-        return FingerprintResult("inconclusive", "low", signals, shop_hint, final_url, status, err)
-
-    return FingerprintResult("inconclusive", "low", [], shop_hint, final_url, status, err)
+    return fingerprint_platform_from_html(
+        html_lower=html,
+        final_url=final_url,
+        status=status,
+        error=err,
+        shop_presence_mode=mode,
+    )
 
 

@@ -27,6 +27,11 @@ SHOPTECH_FLEX_MAX_RETRIES=5
 SHOPTECH_FLEX_FALLBACK_TO_AUTO=1
 SHOPTECH_FLEX_TOKEN_DISCOUNT=0.5
 
+# Optional (local-only / no OpenAI): use Playwright as a fallback when HTTP fetch is blocked/insufficient.
+# Requires Playwright installed + browser downloaded.
+SHOPTECH_PLAYWRIGHT_FALLBACK_ON_BLOCKED=0
+SHOPTECH_PLAYWRIGHT_FALLBACK_ON_UNKNOWN=0
+
 # (gpt-5.2-2025-12-11 SHOPTECH_PRICE_INPUT_PER_1M=1.75 SHOPTECH_PRICE_CACHED_INPUT_PER_1M=0.175 SHOPTECH_PRICE_OUTPUT_PER_1M=14.00 )
 # (gpt-5.1-2025-11-13 Input $1.25 Cached input $0.125 Output $10.00)
 # (gpt-5-mini-2025-08-07 Input $0.25 Cached input $0.025 Output $2.00)
