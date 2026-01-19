@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+from .playwright_limit import playwright_slot
+
 
 @dataclass(frozen=True)
 class PlaywrightFetchResult:
@@ -45,66 +47,67 @@ def fetch_html_playwright(url: str, *, timeout_ms: int = 25_000) -> PlaywrightFe
     html_lower = ""
     err = ""
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-        try:
-            resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            final_url = page.url or url
-            status = int(resp.status) if resp is not None else None
-            html_lower = (page.content() or "").lower()
+    with playwright_slot():
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+            try:
+                resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                final_url = page.url or url
+                status = int(resp.status) if resp is not None else None
+                html_lower = (page.content() or "").lower()
 
-            if status in (403, 429, 503):
-                blocked.append(f"http_{status}")
-            if _looks_like_bot_challenge(html_lower):
-                blocked.append("bot_protection_challenge")
+                if status in (403, 429, 503):
+                    blocked.append(f"http_{status}")
+                if _looks_like_bot_challenge(html_lower):
+                    blocked.append("bot_protection_challenge")
 
-            if blocked:
+                if blocked:
+                    return PlaywrightFetchResult(
+                        ok=False,
+                        final_url=final_url,
+                        status=status,
+                        html_lower=html_lower,
+                        error="blocked",
+                        blocked_reasons=blocked,
+                    )
+
+                if not html_lower.strip():
+                    return PlaywrightFetchResult(
+                        ok=False,
+                        final_url=final_url,
+                        status=status,
+                        html_lower="",
+                        error="empty_html",
+                        blocked_reasons=[],
+                    )
+
+                return PlaywrightFetchResult(
+                    ok=True,
+                    final_url=final_url,
+                    status=status,
+                    html_lower=html_lower,
+                    error="",
+                    blocked_reasons=[],
+                )
+            except Exception as e:
+                err = f"{type(e).__name__}:{e}"
                 return PlaywrightFetchResult(
                     ok=False,
                     final_url=final_url,
                     status=status,
                     html_lower=html_lower,
-                    error="blocked",
-                    blocked_reasons=blocked,
-                )
-
-            if not html_lower.strip():
-                return PlaywrightFetchResult(
-                    ok=False,
-                    final_url=final_url,
-                    status=status,
-                    html_lower="",
-                    error="empty_html",
+                    error=err,
                     blocked_reasons=[],
                 )
-
-            return PlaywrightFetchResult(
-                ok=True,
-                final_url=final_url,
-                status=status,
-                html_lower=html_lower,
-                error="",
-                blocked_reasons=[],
-            )
-        except Exception as e:
-            err = f"{type(e).__name__}:{e}"
-            return PlaywrightFetchResult(
-                ok=False,
-                final_url=final_url,
-                status=status,
-                html_lower=html_lower,
-                error=err,
-                blocked_reasons=[],
-            )
-        finally:
-            try:
-                context.close()
-            except Exception:
-                pass
-            try:
-                browser.close()
-            except Exception:
-                pass
+            finally:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 

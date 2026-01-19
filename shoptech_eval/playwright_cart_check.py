@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from .shop_functionality import ShopFunctionalityResult
+from .playwright_limit import playwright_slot
 
 
 def _looks_like_bot_challenge(text_lower: str) -> bool:
@@ -73,120 +74,120 @@ def detect_shop_functionality_playwright(
 
         return list(dict.fromkeys(sig))
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-        try:
-            resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            status = int(resp.status) if resp is not None else None
-            checked.append(page.url)
+    with playwright_slot():
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+            try:
+                resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                status = int(resp.status) if resp is not None else None
+                checked.append(page.url)
+                # Hard blocks
+                content = (page.content() or "").lower()
+                if status in (403, 429, 503) or _looks_like_bot_challenge(content):
+                    reasons = []
+                    if status in (403, 429, 503):
+                        reasons.append(f"http_{status}")
+                    if _looks_like_bot_challenge(content):
+                        reasons.append("bot_protection_challenge")
+                    return ShopFunctionalityResult(
+                        presence="blocked",
+                        signals=[f"blocked:{r}" for r in reasons] or ["blocked"],
+                        checked_urls=checked,
+                        error="",
+                        http_status=status,
+                        blocked_reasons=reasons,
+                    )
 
-            # Hard blocks
-            content = (page.content() or "").lower()
-            if status in (403, 429, 503) or _looks_like_bot_challenge(content):
-                reasons = []
-                if status in (403, 429, 503):
-                    reasons.append(f"http_{status}")
-                if _looks_like_bot_challenge(content):
-                    reasons.append("bot_protection_challenge")
-                return ShopFunctionalityResult(
-                    presence="blocked",
-                    signals=[f"blocked:{r}" for r in reasons] or ["blocked"],
-                    checked_urls=checked,
-                    error="",
-                    http_status=status,
-                    blocked_reasons=reasons,
-                )
+                sig = _has_cart_signals(page)
+                if any(s.startswith("blocked:") for s in sig):
+                    return ShopFunctionalityResult(
+                        presence="blocked",
+                        signals=sig,
+                        checked_urls=checked,
+                        error="",
+                        http_status=status,
+                        blocked_reasons=[s.split(":", 1)[1] for s in sig if s.startswith("blocked:")],
+                    )
+                if sig:
+                    return ShopFunctionalityResult(
+                        presence="has_cart_checkout",
+                        signals=sig,
+                        checked_urls=checked,
+                        error="",
+                        http_status=status,
+                        blocked_reasons=[],
+                    )
 
-            sig = _has_cart_signals(page)
-            if any(s.startswith("blocked:") for s in sig):
+                if follow_links:
+                    # Follow a few likely links to shop/cart/checkout pages.
+                    link_selectors = [
+                        "a[href*='shop']",
+                        "a[href*='store']",
+                        "a[href*='webshop']",
+                        "a[href*='cart']",
+                        "a[href*='warenkorb']",
+                        "a[href*='checkout']",
+                        "a[href*='kasse']",
+                        "a[href*='produkte']",
+                        "a[href*='product']",
+                    ]
+                    seen = set()
+                    links = []
+                    for sel in link_selectors:
+                        try:
+                            for el in page.locator(sel).all()[: max_links]:
+                                href = el.get_attribute("href") or ""
+                                if href and href not in seen:
+                                    seen.add(href)
+                                    links.append(href)
+                        except Exception:
+                            continue
+                        if len(links) >= max_links:
+                            break
+
+                    for href in links[:max_links]:
+                        try:
+                            page.goto(href, wait_until="domcontentloaded", timeout=timeout_ms)
+                            checked.append(page.url)
+                            sig2 = _has_cart_signals(page)
+                            if sig2:
+                                return ShopFunctionalityResult(
+                                    presence="has_cart_checkout",
+                                    signals=sig2 + ["via_link"],
+                                    checked_urls=checked,
+                                    error="",
+                                    http_status=None,
+                                    blocked_reasons=[],
+                                )
+                        except Exception:
+                            continue
+
                 return ShopFunctionalityResult(
-                    presence="blocked",
-                    signals=sig,
-                    checked_urls=checked,
-                    error="",
-                    http_status=status,
-                    blocked_reasons=[s.split(":", 1)[1] for s in sig if s.startswith("blocked:")],
-                )
-            if sig:
-                return ShopFunctionalityResult(
-                    presence="has_cart_checkout",
-                    signals=sig,
+                    presence="no_cart_checkout",
+                    signals=[],
                     checked_urls=checked,
                     error="",
                     http_status=status,
                     blocked_reasons=[],
                 )
-
-            if follow_links:
-                # Follow a few likely links to shop/cart/checkout pages.
-                link_selectors = [
-                    "a[href*='shop']",
-                    "a[href*='store']",
-                    "a[href*='webshop']",
-                    "a[href*='cart']",
-                    "a[href*='warenkorb']",
-                    "a[href*='checkout']",
-                    "a[href*='kasse']",
-                    "a[href*='produkte']",
-                    "a[href*='product']",
-                ]
-                seen = set()
-                links = []
-                for sel in link_selectors:
-                    try:
-                        for el in page.locator(sel).all()[: max_links]:
-                            href = el.get_attribute("href") or ""
-                            if href and href not in seen:
-                                seen.add(href)
-                                links.append(href)
-                    except Exception:
-                        continue
-                    if len(links) >= max_links:
-                        break
-
-                for href in links[:max_links]:
-                    try:
-                        page.goto(href, wait_until="domcontentloaded", timeout=timeout_ms)
-                        checked.append(page.url)
-                        sig2 = _has_cart_signals(page)
-                        if sig2:
-                            return ShopFunctionalityResult(
-                                presence="has_cart_checkout",
-                                signals=sig2 + ["via_link"],
-                                checked_urls=checked,
-                                error="",
-                                http_status=None,
-                                blocked_reasons=[],
-                            )
-                    except Exception:
-                        continue
-
-            return ShopFunctionalityResult(
-                presence="no_cart_checkout",
-                signals=[],
-                checked_urls=checked,
-                error="",
-                http_status=status,
-                blocked_reasons=[],
-            )
-        except Exception as e:
-            return ShopFunctionalityResult(
-                presence="error",
-                signals=["error:playwright_exception"],
-                checked_urls=checked or [url],
-                error=f"{type(e).__name__}:{e}",
-                http_status=None,
-                blocked_reasons=[],
-            )
-        finally:
-            try:
-                context.close()
-            except Exception:
-                pass
-            try:
-                browser.close()
-            except Exception:
-                pass
+            except Exception as e:
+                return ShopFunctionalityResult(
+                    presence="error",
+                    signals=["error:playwright_exception"],
+                    checked_urls=checked or [url],
+                    error=f"{type(e).__name__}:{e}",
+                    http_status=None,
+                    blocked_reasons=[],
+                )
+            finally:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 

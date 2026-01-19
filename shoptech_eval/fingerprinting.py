@@ -151,11 +151,37 @@ def fingerprint_platform_from_html(
     if wc_hits >= 1 and shop_hint != "shop":
         signals.append("hint:woocommerce_assets_without_shop_signals")
 
-    # Shopware 6 storefront
+    # Shopware (strong markers)
+    # Shopware 6 commonly exposes "/bundles/storefront" assets on the storefront.
     for s in ("/bundles/storefront",):
         if has(s):
             signals.append(f"shopware:{s}")
             return FingerprintResult("shopware", "high", signals, shop_hint, final_url, status, error)
+
+    # Shopware 6 often exposes plugin metadata in HTML (very distinctive).
+    # Example: data-plugin-version="shopware6_1.5.0"
+    if 'data-plugin-version="shopware' in html or "data-plugin-version='shopware" in html:
+        signals.append("shopware:data-plugin-version")
+        return FingerprintResult("shopware", "high", signals, shop_hint, final_url, status, error)
+    if "window.shopware" in html:
+        signals.append("shopware:window.shopware")
+        return FingerprintResult("shopware", "high", signals, shop_hint, final_url, status, error)
+
+    # Meta generator tags sometimes expose Shopware directly.
+    if re.search(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\'][^"\']*shopware', html):
+        signals.append("shopware:meta_generator")
+        return FingerprintResult("shopware", "high", signals, shop_hint, final_url, status, error)
+
+    # Shopware 5 often exposes "/themes/Frontend" assets and/or "shopware.php" front controller URLs.
+    # (We keep these lowercase because html is lowercased above.)
+    for s in ("shopware.php", "/themes/frontend", "jquery.shopware", "/engine/shopware", "shopware.apps"):
+        if has(s):
+            signals.append(f"shopware:{s}")
+            return FingerprintResult("shopware", "high", signals, shop_hint, final_url, status, error)
+
+    # Weak/auxiliary hints (do not classify on their own)
+    if has("/widgets/"):
+        signals.append("shopware:widgets_path")
     if has("shopware"):
         signals.append("shopware:shopware_word")
 

@@ -4,10 +4,12 @@ import json
 import os
 import random
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -426,10 +428,29 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--openai-fallback-on-unknown",
+        action="store_true",
+        default=(os.environ.get("SHOPTECH_OPENAI_FALLBACK_ON_UNKNOWN", "").strip() in ("1", "true", "TRUE", "yes", "YES")),
+        help=(
+            "When using --local-first: only call OpenAI if local detection still returns final_platform=unknown "
+            "(i.e. OpenAI is a last-resort fallback for unknowns only). Env: SHOPTECH_OPENAI_FALLBACK_ON_UNKNOWN=1"
+        ),
+    )
+    parser.add_argument(
         "--progress-every",
         type=int,
         default=int(os.environ.get("SHOPTECH_PROGRESS_EVERY", "25")),
         help="Print progress/ETA every N completed evaluations. Env: SHOPTECH_PROGRESS_EVERY (default 25)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.environ.get("SHOPTECH_WORKERS", "1") or 1),
+        help=(
+            "Number of concurrent worker threads (best for I/O-bound fetches). "
+            "Note: output files are still written under a lock to avoid corruption. "
+            "Default: 1. Env: SHOPTECH_WORKERS"
+        ),
     )
     args = parser.parse_args()
 
@@ -623,13 +644,19 @@ def main() -> int:
         if csv_mode == "w":
             writer.writeheader()
 
-        for i, r in enumerate(filtered_rows, start=1):
+        total_rows = len(filtered_rows)
+        write_lock = threading.Lock()
+
+        def _process_row(i: int, r: Dict[str, str]) -> None:
+            nonlocal completed_ok, completed_err
             website = (r.get(args.url_column) or r.get("Website") or "").strip()
             name = (r.get(args.name_column) or r.get("Firma") or "").strip()
             if not website:
-                continue
+                return
 
-            print(f"[{i}/{len(filtered_rows)}] Evaluating: {name} | {website}", flush=True)
+            with write_lock:
+                print(f"[{i}/{total_rows}] Evaluating: {name} | {website}", flush=True)
+
             t0 = time.monotonic()
             ws_debug: Dict[str, Any] | None = None
             error: str | None = None
@@ -752,6 +779,42 @@ def main() -> int:
                     # Treat high-confidence non-unknown detections as "good enough" to skip OpenAI
                     local_conf = str(local_result.get("confidence") or "").strip().lower()
                     local_plat = str(local_result.get("final_platform") or "").strip().lower()
+                    # If requested: ONLY use OpenAI as a last-resort fallback when local still returns unknown.
+                    # Otherwise, accept the local result (even if low confidence) to avoid misleading "upgrades".
+                    if args.local_first and bool(args.openai_fallback_on_unknown) and local_plat != "unknown":
+                        local_used = True
+                        model_result = local_result
+                        usage = type(
+                            "_Usage",
+                            (),
+                            {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0,
+                                "input_tokens_details": type("X", (), {"cached_tokens": 0})(),
+                                "output_tokens_details": type("Y", (), {"reasoning_tokens": 0})(),
+                            },
+                        )()
+                        web_search_calls = 0
+                        url_citations = []
+                        ws_debug = None
+                        web_search_calls_query = 0
+                        web_search_calls_open = 0
+                        web_search_calls_unknown = 0
+                        web_search_tool_calls_total = 0
+                        retry_used = False
+                        retry_selected = "first"
+                        usage_input_tokens = 0
+                        usage_output_tokens = 0
+                        usage_total_tokens = 0
+                        cached_tokens = 0
+                        reasoning_tokens = 0
+                        token_cost_usd_raw = 0.0
+                        token_cost_usd = 0.0
+                        flex_attempts = 0
+                        flex_retries = 0
+                        flex_sleep = 0.0
+                        flex_fallback_used = False
                     if args.local_only or (
                         (local_conf in ("high", "medium"))
                         and local_plat != "unknown"
@@ -801,6 +864,7 @@ def main() -> int:
                 else:
                     # If we ran local-first and it didn't conclusively identify the platform, guide the model with hints.
                     local_hint = None
+                    eval_target_url = website
                     if args.local_first and local_debug and isinstance(local_debug, dict):
                         attempts = local_debug.get("attempts") or []
                         cand_urls: list[str] = []
@@ -812,14 +876,43 @@ def main() -> int:
                         reasons: list[str] = []
                         if isinstance(sticky, dict):
                             reasons = list(sticky.get("reasons") or [])
+                        # If OpenAI fallback-on-unknown is enabled, prefer evaluating the best "shop-like" candidate URL
+                        # rather than the corporate homepage (when we have one).
+                        if bool(args.openai_fallback_on_unknown) and isinstance(attempts, list):
+                            best = None
+                            best_score = -1
+                            for a in attempts:
+                                if not isinstance(a, dict) or not a.get("url"):
+                                    continue
+                                u = str(a.get("url") or "")
+                                sh = str(a.get("shop_hint") or "").strip().lower()
+                                plat = str(a.get("platform") or "").strip().lower()
+                                sig = a.get("signals") or []
+                                score = 0
+                                if sh == "shop":
+                                    score += 50
+                                if plat in ("shopware", "shopify", "woocommerce", "magento"):
+                                    score += 100
+                                if isinstance(sig, list):
+                                    if any(isinstance(s, str) and s.startswith("shopware:") for s in sig):
+                                        score += 40
+                                    if any(isinstance(s, str) and s.startswith("hint:cart/checkout") for s in sig):
+                                        score += 20
+                                if score > best_score:
+                                    best = u
+                                    best_score = score
+                            if best and best_score >= 50:
+                                eval_target_url = best
                         local_hint = (
                             "Local precheck could not confidently identify the platform.\n"
                             + (f"Sticky signals: {', '.join(reasons)}\n" if reasons else "")
                             + (f"Candidate URLs to open first: {', '.join(cand_urls)}\n" if cand_urls else "")
+                            + (f"Preferred target to evaluate first: {eval_target_url}\n" if eval_target_url != website else "")
                             + "Please open the target domain (and any candidate shop URLs) and look for direct HTML/asset markers and cart/checkout presence.\n"
                             + "If direct HTML markers are missing due to JS/bot protection, run a technology-profiler query (e.g. 'builtwith <domain>' or 'wappalyzer <domain>') and use that as Tier B evidence.\n"
                         )
 
+                if not local_used:
                     def _do_eval_once(
                         *,
                         max_tool_calls: int | None,
@@ -831,7 +924,7 @@ def main() -> int:
                         )
                         if use_debug:
                             res, use, ws = evaluate_company_with_usage_and_web_search_debug(
-                                website,
+                                eval_target_url,
                                 args.model,
                                 rubric_file=args.rubric_file,
                                 max_tool_calls=max_tool_calls,
@@ -868,7 +961,7 @@ def main() -> int:
                             }
 
                         res, use, billed_q, citations = evaluate_company_with_usage_and_web_search_artifacts(
-                            website,
+                            eval_target_url,
                             args.model,
                             rubric_file=args.rubric_file,
                             max_tool_calls=max_tool_calls,
@@ -909,10 +1002,10 @@ def main() -> int:
                         if args.max_tool_calls is not None:
                             retry_max = max(int(args.max_tool_calls), retry_max)
                         disambig_prompt = (
-                            "Perform TWO distinct web searches before deciding.\n"
-                            "1) Search for direct platform markers tied to the provided domain (e.g., '<domain> Magento', '<domain> Shopware', '<domain> WooCommerce', '<domain> Shopify').\n"
-                            "2) Search a reputable technology profiler for the domain (e.g., 'builtwith <domain> ecommerce platform' or 'wappalyzer <domain>').\n"
-                            "If evidence conflicts or is not clearly about the provided domain, choose unknown with low confidence.\n"
+                                "Perform TWO distinct web searches before deciding.\n"
+                                "1) Search for direct platform markers tied to the provided domain (e.g., '<domain> Magento', '<domain> Shopware', '<domain> WooCommerce', '<domain> Shopify').\n"
+                                "2) Search a reputable technology profiler for the domain (e.g., 'builtwith <domain> ecommerce platform' or 'wappalyzer <domain>').\n"
+                                "If evidence conflicts or is not clearly about the provided domain, choose unknown with low confidence.\n"
                         )
                         a2 = _do_eval_once(
                             max_tool_calls=retry_max,
@@ -958,9 +1051,7 @@ def main() -> int:
                     flex_sleep = sum(
                         float((a.get("flex_meta") or {}).get("sleep_seconds_total", 0.0) or 0.0) for a in attempts
                     )
-                    flex_fallback_used = any(
-                        bool((a.get("flex_meta") or {}).get("fallback_used", False)) for a in attempts
-                    )
+                    flex_fallback_used = any(bool((a.get("flex_meta") or {}).get("fallback_used", False)) for a in attempts)
             except Exception as e:
                 if not args.continue_on_error:
                     raise
@@ -1071,30 +1162,7 @@ def main() -> int:
             }
             if include_bucket:
                 record["bucket"] = (r.get(bucket_col) or r.get("bucket") or "").strip()
-            results.append(record)
 
-            if error:
-                completed_err += 1
-            else:
-                completed_ok += 1
-
-            if args.progress_every and ((completed_ok + completed_err) % max(1, args.progress_every) == 0):
-                elapsed = time.monotonic() - run_started_at
-                done = completed_ok + completed_err
-                rate = done / elapsed if elapsed > 0 else 0.0
-                remaining = max(0, len(filtered_rows) - done)
-                eta = (remaining / rate) if rate > 0 else float("inf")
-                print(
-                    f"Progress: {done}/{len(filtered_rows)} (ok={completed_ok}, err={completed_err}) "
-                    f"elapsed={elapsed/60:.1f}m eta={eta/60:.1f}m",
-                    flush=True,
-                )
-
-            # JSONL (full raw)
-            out.write(json.dumps(record, ensure_ascii=False) + "\n")
-            out.flush()
-
-            # CSV (flattened)
             sources = url_citations or []
             row_out: Dict[str, Any] = {
                 "run_id": stem,
@@ -1159,10 +1227,46 @@ def main() -> int:
             }
             if include_bucket:
                 row_out["bucket"] = record.get("bucket", "")
-            writer.writerow(row_out)
-            out_csv.flush()
+
+            with write_lock:
+                if error:
+                    completed_err += 1
+                else:
+                    completed_ok += 1
+
+                if args.progress_every and ((completed_ok + completed_err) % max(1, args.progress_every) == 0):
+                    elapsed = time.monotonic() - run_started_at
+                    done = completed_ok + completed_err
+                    rate = done / elapsed if elapsed > 0 else 0.0
+                    remaining = max(0, total_rows - done)
+                    eta = (remaining / rate) if rate > 0 else float("inf")
+                    print(
+                        f"Progress: {done}/{total_rows} (ok={completed_ok}, err={completed_err}) "
+                        f"elapsed={elapsed/60:.1f}m eta={eta/60:.1f}m",
+                        flush=True,
+                    )
+
+                # JSONL (full raw)
+                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                out.flush()
+
+                # CSV (flattened)
+                writer.writerow(row_out)
+                out_csv.flush()
 
             time.sleep(max(0.0, args.sleep))
+
+        workers = max(1, int(args.workers or 1))
+        if workers <= 1:
+            for i, r in enumerate(filtered_rows, start=1):
+                _process_row(i, r)
+        else:
+            futures = []
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for i, r in enumerate(filtered_rows, start=1):
+                    futures.append(ex.submit(_process_row, i, r))
+                for fut in as_completed(futures):
+                    fut.result()
 
     print(f"\nWrote results (jsonl): {out_path}", flush=True)
     print(f"Wrote results (csv):   {out_csv_path}", flush=True)

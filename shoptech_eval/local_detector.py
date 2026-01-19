@@ -5,6 +5,7 @@ import re
 import ssl
 import urllib.parse
 import urllib.request
+import urllib.error
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -32,6 +33,17 @@ def _host_from_url(url: str) -> str:
     try:
         u = _normalize_url(url)
         return (urllib.parse.urlparse(u).hostname or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _origin_from_url(url: str) -> str:
+    try:
+        u = _normalize_url(url)
+        pu = urllib.parse.urlparse(u)
+        if not pu.scheme or not pu.netloc:
+            return ""
+        return f"{pu.scheme}://{pu.netloc}"
     except Exception:
         return ""
 
@@ -98,6 +110,58 @@ def _probe_shopify_cart_js(host: str, *, timeout_seconds: float = 8.0) -> Tuple[
     except Exception as e:
         return False, f"{type(e).__name__}:{e}"
 
+
+def _probe_shopware_store_api_context(host: str, *, timeout_seconds: float = 8.0) -> Tuple[bool, str]:
+    """
+    Shopware 6 storefronts commonly expose the Store API under /store-api/ and require an "sw-access-key" header.
+
+    We intentionally probe /store-api/context without any credentials:
+    - If the endpoint exists and returns a JSON error indicating the missing "sw-access-key", that's a strong Shopware signal.
+    - Otherwise, we do NOT classify as Shopware from this probe.
+
+    Returns (hit, reason).
+    """
+    h = (host or "").strip().lower().strip(".")
+    if not h:
+        return False, "empty_host"
+    url = f"https://{h}/store-api/context"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) shoptech-local-detector/1.0",
+            "Accept": "application/json,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=float(timeout_seconds), context=ssl.create_default_context()) as resp:
+            status = int(getattr(resp, "status", 0) or 0)
+            if status == 200:
+                # Even if public, we'd still prefer HTML markers; don't treat 200 as definitive.
+                return False, "status_200_no_assert"
+            return False, f"status_{status}"
+    except urllib.error.HTTPError as e:
+        status = int(getattr(e, "code", 0) or 0)
+        ct = str(getattr(e, "headers", {}).get("content-type", "") or "").lower()
+        try:
+            body = (e.read(200_000) or b"").decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        if status in (401, 403) and ("json" in ct) and body.strip():
+            try:
+                obj = json.loads(body)
+            except Exception:
+                obj = None
+            if isinstance(obj, dict) and isinstance(obj.get("errors"), list):
+                for err in obj.get("errors") or []:
+                    if not isinstance(err, dict):
+                        continue
+                    detail = str(err.get("detail") or "").lower()
+                    if "sw-access-key" in detail:
+                        return True, "store_api_requires_sw_access_key"
+        return False, f"http_{status}"
+    except Exception as e:
+        return False, f"{type(e).__name__}:{e}"
 
 def _probe_wc_store_api_products(host: str, *, timeout_seconds: float = 8.0) -> Tuple[bool, str]:
     """
@@ -257,6 +321,24 @@ def detect_platform_local(
             }
             return LocalDetectResult(model_result=model_result, debug=debug)
 
+    # 1c) Shopware Store API probe (strong installed signal when the endpoint exists).
+    if host:
+        hit, why = _probe_shopware_store_api_context(host)
+        debug["shopware_store_api_probe"] = {"hit": bool(hit), "reason": why}
+        if hit:
+            shop_presence = "shop" if mode == "installed" else "unclear"
+            model_result = {
+                "input_url": input_url,
+                "final_platform": "shopware",
+                "shop_presence": shop_presence,
+                "other_platform_label": "",
+                "confidence": "high",
+                "evidence_tier": "A",
+                "signals": ["shopware:/store-api/context", f"shopware:store_api:{why}"],
+                "reasoning": "Shopware Store API endpoint indicates Shopware.",
+            }
+            return LocalDetectResult(model_result=model_result, debug=debug)
+
     # 2) Homepage fetch for link discovery + header hints
     base_final, base_status, base_html, base_headers, base_err = _fetch_html(input_url)
     debug["base_fetch"] = {"final_url": base_final, "status": base_status, "error": base_err, "html_chars": len(base_html)}
@@ -330,8 +412,32 @@ def detect_platform_local(
                     debug=debug,
                 )
 
-    # Header/cookie hints for Shopify
+    # Header/cookie hints for Shopware (best-effort)
+    header_blob = " ".join(
+        [
+            base_headers.get("server", ""),
+            base_headers.get("x-powered-by", ""),
+            base_headers.get("x-generator", ""),
+            base_headers.get("set-cookie", ""),
+        ]
+    ).lower()
     set_cookie = base_headers.get("set-cookie", "")
+    sw_cookie_hint = ("sw-context-token" in set_cookie) or ("sw-cache-hash" in set_cookie)
+    if any(k.startswith("x-shopware") for k in base_headers.keys()) or ("shopware" in header_blob) or sw_cookie_hint:
+        shop_presence = "shop" if mode == "installed" else "unclear"
+        model_result = {
+            "input_url": input_url,
+            "final_platform": "shopware",
+            "shop_presence": shop_presence,
+            "other_platform_label": "",
+            "confidence": "high",
+            "evidence_tier": "A",
+            "signals": ["header/cookie:shopware_hint"] + (["cookie:sw_context_or_cache_hash"] if sw_cookie_hint else []),
+            "reasoning": "HTTP headers/cookies indicate Shopware.",
+        }
+        return LocalDetectResult(model_result=model_result, debug=debug)
+
+    # Header/cookie hints for Shopify
     if "_shopify" in set_cookie or "shopify" in (base_headers.get("server", "") + " " + base_headers.get("x-powered-by", "")):
         model_result = {
             "input_url": input_url,
@@ -346,7 +452,17 @@ def detect_platform_local(
         return LocalDetectResult(model_result=model_result, debug=debug)
 
     # 3) Fingerprint homepage
-    fp0 = fingerprint_platform(base_final or input_url, shop_presence_mode=mode)
+    # Avoid a redundant refetch when we already have base HTML.
+    if base_html:
+        fp0 = fingerprint_platform_from_html(
+            html_lower=base_html,
+            final_url=base_final or input_url,
+            status=base_status,
+            error=base_err,
+            shop_presence_mode=mode,
+        )
+    else:
+        fp0 = fingerprint_platform(base_final or input_url, shop_presence_mode=mode)
     debug["attempts"].append(
         {
             "url": base_final or input_url,
@@ -445,6 +561,46 @@ def detect_platform_local(
                 ),
                 debug=debug,
             )
+
+    # 4b) Probe a few common shop paths on the same origin (many companies host the storefront at /shop or /store).
+    # Keep this intentionally small to avoid slowing down large runs.
+    if not sticky_reasons:
+        base_origin = _origin_from_url(base_final or input_url)
+        if base_origin:
+            for path in ("/shop", "/shop/", "/store", "/store/", "/webshop", "/webshop/"):
+                candidate = urllib.parse.urljoin(base_origin, path)
+                final_u, st, html, _hdrs, err = _fetch_html(candidate, timeout_seconds=10.0, max_bytes=700_000)
+                fp = fingerprint_platform_from_html(
+                    html_lower=html,
+                    final_url=final_u or candidate,
+                    status=st,
+                    error=err,
+                    shop_presence_mode=mode,
+                )
+                debug["attempts"].append(
+                    {
+                        "url": final_u or candidate,
+                        "status": st,
+                        "platform": fp.platform,
+                        "confidence": fp.confidence,
+                        "shop_hint": fp.shop_presence_hint,
+                        "signals": fp.signals,
+                        "error": fp.error,
+                        "via": "path_probe",
+                    }
+                )
+                if fp.platform in ("woocommerce", "shopify", "shopware", "magento"):
+                    sp = "shop" if mode == "installed" else (fp.shop_presence_hint or "unclear")
+                    return LocalDetectResult(
+                        model_result=_as_model_result(
+                            fp.platform,
+                            fp.signals,
+                            shop_presence=sp,
+                            confidence=fp.confidence,
+                            other_label="",
+                        ),
+                        debug=debug,
+                    )
 
     # 5) Probe common shop subdomains (shop./store./webshop.)
     for sub_host in _subdomain_candidates(host):
