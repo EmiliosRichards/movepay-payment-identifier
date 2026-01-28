@@ -1,4 +1,4 @@
-﻿# chat_completions_websearch_key_2
+# chat_completions_websearch_key_2
 OPENAI_API_KEY=
 # Optional:
 OPENAI_MODEL=gpt-5.1-2025-11-13
